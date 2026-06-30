@@ -6,7 +6,7 @@ import {
   Vector3,
 } from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
-import { isLand } from './land-mask';
+import { isLand, LAT_STRETCH } from './land-mask';
 
 export interface PlanetBuildOptions {
   /** Sea-level (equatorial) radius in world units. */
@@ -50,6 +50,42 @@ const THICKNESS = CUBE * Math.max(1, LAND_RELIEF + 0.2);
 // the faceting (the sphere is a coarse polygon up close). Radially they just stack,
 // so no radial overlap — that only causes coplanar z-fighting.
 const OVERLAP = 1.04;
+
+const DEG2RAD = Math.PI / 180;
+
+/** Outward distance from sea level to a land cube's top face (where markers sit). */
+export const LAND_TOP_OFFSET = LAND_RELIEF * CUBE;
+
+/**
+ * Map a geographic `[lat, lon]` (degrees) to the point on the land-top shell and the
+ * outward normal there, in the planet's **local** space (before any spin).
+ *
+ * Applies the same {@link LAT_STRETCH} squeeze the land mask was baked with
+ * (`planetLat = lat / LAT_STRETCH`), so a marker lands on the continent that is
+ * actually drawn at that latitude instead of drifting poleward off it; the longitude
+ * and the outward tangent frame match {@link buildPlanet} exactly. Parent the object
+ * to the returned mesh (or apply its world matrix) so it follows the rotation.
+ *
+ * Returns the surface `position`, the outward `normal`, and the `north` tangent (along
+ * the meridian toward the north pole) — enough to build a local surface frame
+ * (`east = north × normal`).
+ */
+export function geoToSurface(
+  latDeg: number,
+  lonDeg: number,
+  radius: number,
+): { position: Vector3; normal: Vector3; north: Vector3 } {
+  const lat = (latDeg / LAT_STRETCH) * DEG2RAD;
+  const th = lonDeg * DEG2RAD;
+  const cosLat = Math.cos(lat);
+  const sinLat = Math.sin(lat);
+  const ct = Math.cos(th);
+  const st = Math.sin(th);
+  const normal = new Vector3(cosLat * ct, sinLat, -cosLat * st);
+  const north = new Vector3(-sinLat * ct, cosLat, sinLat * st);
+  const position = normal.clone().multiplyScalar(radius + LAND_TOP_OFFSET);
+  return { position, normal, north };
+}
 
 /**
  * Build the planet as a single {@link InstancedMesh}: a **UV-sphere of cubes**.

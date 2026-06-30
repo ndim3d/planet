@@ -12,3 +12,4 @@ export type {
   PlanetMaterialOptions,
   PlanetWidgetOptions,
 } from './widget';
+export type { MarkerConfig, MarkerOptions } from './marker';

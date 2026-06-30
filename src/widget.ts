@@ -12,6 +12,7 @@ import {
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { buildPlanet } from './planet';
+import { Marker, type MarkerConfig } from './marker';
 
 /** Tunables of one directional light. All fields optional. */
 export interface DirectionalLightOptions {
@@ -72,9 +73,14 @@ export interface PlanetWidgetOptions {
   material?: PlanetMaterialOptions;
   /** Lighting and tone mapping. Omitted fields keep their defaults. */
   lighting?: PlanetLightingOptions;
+  /**
+   * Pin markers to place on the surface. Each rides the planet's spin and hides when
+   * it turns to the far side. A marker's `size` defaults to `radius * 0.22`.
+   */
+  markers?: MarkerConfig[];
 }
 
-const DEFAULTS: Required<Omit<PlanetWidgetOptions, 'material' | 'lighting'>> = {
+const DEFAULTS: Required<Omit<PlanetWidgetOptions, 'material' | 'lighting' | 'markers'>> = {
   background: '#0b0f1a',
   waterColor: '#2796e0',
   landColor: '#47b54b',
@@ -142,6 +148,7 @@ export class PlanetWidget {
   private readonly camera: PerspectiveCamera;
   private readonly renderer: WebGLRenderer;
   private readonly planet: InstancedMesh;
+  private readonly markers: Marker[];
   private readonly controls: OrbitControls;
   private readonly resizeObserver: ResizeObserver;
 
@@ -204,6 +211,18 @@ export class PlanetWidget {
     // North pole is +Y; spinning around Y keeps north up (no axial tilt).
     this.scene.add(this.planet);
 
+    // Markers (from options): each pin is parented to the planet so it rides the spin,
+    // standing vertical where that clears the surface and tilting outward in the southern
+    // hemisphere (face-on at the front, edge-on — showing its thickness — toward the
+    // limb); update() only hides it past the horizon.
+    const defaultMarkerSize = opts.radius * 0.22;
+    this.markers = (options.markers ?? []).map((cfg) => {
+      const marker = new Marker({ color: cfg.color, size: cfg.size ?? defaultMarkerSize });
+      this.planet.add(marker.object);
+      marker.placeAt(cfg.lat, cfg.lon, opts.radius);
+      return marker;
+    });
+
     // Hemisphere light gives a rotation-independent top→bottom gradient, so a
     // cube's up/side/down faces always read differently no matter the spin angle.
     // The ground tone is kept fairly light (not near-black) so down-facing faces and
@@ -258,6 +277,7 @@ export class PlanetWidget {
     this.controls.removeEventListener('end', this.onInteractEnd);
     this.controls.dispose();
     this.renderer.domElement.remove();
+    for (const marker of this.markers) marker.dispose();
     this.planet.geometry.dispose();
     (this.planet.material as { dispose(): void }).dispose();
     this.planet.dispose();
@@ -289,6 +309,8 @@ export class PlanetWidget {
     const idle = !this.interacting && now - this.lastInteractionEnd >= IDLE_RESUME_MS;
     if (idle) this.planet.rotation.y += this.rotationSpeed * delta;
     this.controls.update();
+    // Fade/hide each marker as the spin carries it behind the globe.
+    for (const marker of this.markers) marker.update(this.camera.position, this.planet);
     this.renderer.render(this.scene, this.camera);
     this.frameId = requestAnimationFrame(this.tick);
   };
