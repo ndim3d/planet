@@ -1,0 +1,32 @@
+{
+  "name": "planet-widget",
+  "version": "0.1.0",
+  "description": "Three.js planet widget that mounts into an HTML element. Ships as a self-contained ESM module.",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/planet-widget.js",
+  "module": "./dist/planet-widget.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/planet-widget.js"
+    }
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:demo": "vite build --mode demo",
+    "preview:demo": "vite preview --outDir dist-demo",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "three": "*",
+    "@types/three": "*",
+    "typescript": "*",
+    "vite": "*",
+    "vite-plugin-dts": "*"
+  }
+}

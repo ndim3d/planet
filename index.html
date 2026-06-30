@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Planet widget — demo</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1.25rem;
+        min-height: 100vh;
+        background: #05070d;
+        color: #c7d0e0;
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+      header {
+        text-align: center;
+      }
+      header h1 {
+        margin: 0 0 0.25rem;
+        font-size: 1.1rem;
+        font-weight: 600;
+      }
+      header p {
+        margin: 0;
+        font-size: 0.85rem;
+        color: #6b7689;
+      }
+      /* The widget is mounted into this element — it fills the stage box. */
+      #stage {
+        width: min(80vmin, 560px);
+        height: min(80vmin, 560px);
+        border: 1px solid #1c2436;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>planet-widget</h1>
+      <p>Demo — a lit sphere mounted into an HTML element</p>
+    </header>
+    <div id="stage"></div>
+    <script type="module" src="/src/demo.ts"></script>
+  </body>
+</html>

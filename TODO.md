@@ -1,0 +1,1 @@
+- deferred rendering to prevent redundant work
