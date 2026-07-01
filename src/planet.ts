@@ -56,6 +56,9 @@ const DEG2RAD = Math.PI / 180;
 /** Outward distance from sea level to a land cube's top face (where markers sit). */
 export const LAND_TOP_OFFSET = LAND_RELIEF * CUBE;
 
+/** World edge length of one surface (land/water) cube; clouds size their voxels off this. */
+export const LAND_CUBE = CUBE;
+
 /**
  * Map a geographic `[lat, lon]` (degrees) to the point on the land-top shell and the
  * outward normal there, in the planet's **local** space (before any spin).

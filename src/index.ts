@@ -8,6 +8,7 @@
 export { PlanetWidget } from './widget';
 export type {
   DirectionalLightOptions,
+  PlanetCloudOptions,
   PlanetLightingOptions,
   PlanetMaterialOptions,
   PlanetWidgetOptions,
