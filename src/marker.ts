@@ -8,7 +8,11 @@ import {
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { geoToSurface } from './planet';
 
-/** Appearance tunables of a surface marker. All fields optional. */
+/**
+ * Appearance tunables passed to the {@link Marker} class. `color` and `size` are per-pin;
+ * `voxel` is the pin's cube edge, which the {@link PlanetWidget} sets for every pin from its
+ * single `markerVoxelSize` option — so it is not a per-pin field on {@link MarkerConfig}.
+ */
 export interface MarkerOptions {
   /** Pin voxel color (any CSS / hex color). Defaults to `#e8453d` (red). */
   color?: string;
@@ -22,8 +26,12 @@ export interface MarkerOptions {
   voxel?: number;
 }
 
-/** A marker to place on the planet: a geographic point plus its appearance. */
-export interface MarkerConfig extends MarkerOptions {
+/** A marker to place on the planet: a geographic point plus its per-pin appearance. */
+export interface MarkerConfig {
+  /** Pin voxel color (any CSS / hex color). Defaults to `#e8453d` (red). */
+  color?: string;
+  /** Overall pin height in world units. Defaults to `radius * 0.18`. */
+  size?: number;
   /** Latitude in degrees, +90 (north) … −90 (south). */
   lat: number;
   /** Longitude in degrees, −180 … +180. */
@@ -158,9 +166,8 @@ export class Marker {
     const geometry = new RoundedBoxGeometry(voxel, voxel, voxel, 2, voxel * 0.18);
     this.material = new MeshStandardMaterial({
       color,
-      roughness: 0.35,
+      roughness: 0.5,
       metalness: 0,
-      envMapIntensity: 0.9,
     });
 
     const mesh = new InstancedMesh(geometry, this.material, cells.length * depth);

@@ -7,15 +7,14 @@ import {
   MeshStandardMaterial,
   NeutralToneMapping,
   PerspectiveCamera,
-  PMREMGenerator,
   Quaternion,
   Scene,
   Vector3,
+  VSMShadowMap,
   WebGLRenderer,
 } from 'three';
-import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { buildPlanet, DEFAULT_VOXEL, DEFAULT_RELIEF, DEFAULT_RING_STEP, DEFAULT_POLE_CAP } from './planet';
-import { buildClouds, type BuildCloudsOptions } from './cloud';
+import { buildPlanet } from './planet';
+import { buildClouds, CLOUD_DEFAULTS, type BuildCloudsOptions } from './cloud';
 import { buildStarfield, type StarfieldOptions } from './starfield';
 import { Marker, type MarkerConfig } from './marker';
 
@@ -42,23 +41,21 @@ export interface PlanetLightingOptions {
     /** Intensity. Defaults to `1.0`. */
     intensity?: number;
   };
-  /** Main key light, straight up the +Y axis. Defaults to white, `0.6`, at `[0, 10, 0]`. */
+  /** Main key light from the upper right (fixed studio light). Defaults to white, `1.6`, at `[8, 6, 5]`. */
   key?: DirectionalLightOptions;
-  /** Opposite fill light, straight down the −Y axis. Defaults to `#e6eeff`, `0.3`, at `[0, -10, 0]`. */
+  /** Soft fill from the lower left, lifting the shadow side. Defaults to `#dce6ff`, `0.35`, at `[-7, -3, 3]`. */
   fill?: DirectionalLightOptions;
 }
 
 /** Surface material / cube appearance tunables. All fields optional. */
 export interface PlanetMaterialOptions {
-  /** Roughness, 0 (glossy) … 1 (matte). Defaults to `0.4`. */
+  /** Roughness, 0 (glossy) … 1 (matte). Defaults to `0.55`. */
   roughness?: number;
   /** Metalness, 0 … 1. Defaults to `0`. */
   metalness?: number;
-  /** Environment-map reflection strength. Defaults to `0.9`. */
-  envMapIntensity?: number;
-  /** Cube edge chamfer, as a fraction of one cube. Defaults to `0.12`. */
+  /** Cube edge chamfer, as a fraction of one cube. Defaults to `0.15`. */
   bevel?: number;
-  /** Per-cube brightness jitter (± fraction) so fields aren't dead-flat. Defaults to `0.07`. */
+  /** Per-cube brightness jitter (± fraction) so fields aren't dead-flat. Defaults to `0.06`. */
   colorJitter?: number;
 }
 
@@ -116,6 +113,12 @@ export interface PlanetWidgetOptions {
    */
   markers?: MarkerConfig[];
   /**
+   * Edge length of every pin's voxel cube, in world units — applies to all {@link markers}.
+   * Smaller renders finer pins. Omit to let each pin use its size-proportional default (so a
+   * pin keeps the same fine look whatever its `size`).
+   */
+  markerVoxelSize?: number;
+  /**
    * Background voxel clouds that trail the planet's spin. Pass `false` to hide them,
    * `true` (default) for the default field, or a {@link PlanetCloudOptions} object to
    * control count, seed, size, surface clearance and follow lag.
@@ -123,59 +126,58 @@ export interface PlanetWidgetOptions {
   clouds?: boolean | PlanetCloudOptions;
 }
 
-const DEFAULTS: Required<Omit<PlanetWidgetOptions, 'material' | 'lighting' | 'markers'>> = {
-  background: '#0b0f1a',
-  starfield: false,
-  waterColor: '#2796e0',
-  landColor: '#47b54b',
+/**
+ * The fully-resolved options the widget falls back on for every field the caller omits —
+ * the single source of truth for the defaults. The constructor merges caller options over
+ * this, and the demo imports it to seed its control panel, so no default value is written
+ * twice: the demo only spells out the few knobs it deliberately sets differently.
+ *
+ * Notes on the chosen values:
+ * - Matte-plastic toy look (see the reference art): no environment map at all — just a bright
+ *   diffuse hemisphere fill plus two directional lights. `metalness` 0 (plastic is a
+ *   dielectric), a mid `roughness` so the directional speculars read as a soft plastic sheen
+ *   rather than a mirror dot, and a rounded `bevel` so the edges catch a bright rim.
+ * - Form-emphasising key from the upper right (see the reference: the right of the globe is
+ *   lit, the left falls into shadow). The key sits in world/camera space, not on the spin
+ *   axis, so it is a fixed studio light: the planet turns underneath it and terrain brightens
+ *   as it swings to the lit right side and dims to the shadowed left — the intended read of a
+ *   rotating toy globe, not a bright patch pinned to one longitude. The hemisphere is the
+ *   rotation-independent ambient that keeps the shadow side coloured (never black) and gives
+ *   the top→bottom form; a weak fill from the lower left lifts the deepest shadows without
+ *   killing the contrast. Because the key now reaches the camera-facing side walls (their
+ *   normals point out through +X/+Z), the hemisphere no longer has to carry them alone, so it
+ *   is dialled back from the flat, near-shadowless fill it was before.
+ * - `clouds` is spelled out as the resolved cloud-field object (from the cloud module, plus
+ *   the widget-level follow `lag`); passing it is equivalent to `clouds: true`.
+ */
+export const DEFAULTS = {
+  background: '#0f1225',
+  starfield: true,
+  waterColor: '#4aa1fc',
+  landColor: '#90e13b',
   radius: 30,
   rotationSpeed: 0.1,
-  autoRotate: true,
-  clouds: true,
-  terrain: {
-    relief: 0.5,
+  autoRotate: false,
+  clouds: { ...CLOUD_DEFAULTS, lag: 0.05 },
+  material: {
+    roughness: 0.55,
+    metalness: 0,
+    bevel: 0.15,
+    colorJitter: 0.04,
   },
-};
-
-// Glossy-plastic toy look (see reference): a low roughness gives the soft specular
-// sheen of moulded plastic rather than matte clay; a strong envMapIntensity lets the
-// procedural room reflect across the cube tops and bevels for the studio highlight;
-// metalness stays 0 because plastic is a dielectric. The bevel is a touch rounder so
-// the edges catch a bright rim, which is what reads as "plastic" more than anything.
-const MATERIAL_DEFAULTS: Required<PlanetMaterialOptions> = {
-  roughness: 0.4,
-  metalness: 0,
-  envMapIntensity: 0.9,
-  bevel: 0.12,
-  colorJitter: 0.07,
-};
-
-const TERRAIN_DEFAULTS: Required<PlanetTerrainOptions> = {
-  voxel: DEFAULT_VOXEL,
-  relief: DEFAULT_RELIEF,
-  ringStep: DEFAULT_RING_STEP,
-  poleCap: DEFAULT_POLE_CAP,
-};
-
-// The planet spins around Y, so only lighting that is symmetric about the Y axis keeps
-// a fixed point's brightness constant through the spin (hemisphere depends only on
-// normal.y; a directional light on the Y axis likewise). Any *off-axis* directional
-// light depends on normal.x/z, which a Y-rotation changes — that paints a fixed bright
-// patch at one longitude that the continents scroll through, brightening and dimming.
-// So: hemisphere as the main soft top→bottom form, and the key/fill placed straight
-// up / straight down. The continents then keep an even brightness as they rotate past.
-const LIGHTING_DEFAULTS = {
-  exposure: 1.0,
-  // Studio-soft, evenly-bright look (see reference): the whole sphere stays vivid with
-  // only a gentle top→bottom falloff. The ground tone is lifted well off the old dark
-  // blue-grey so down-facing faces and the lower hemisphere keep their saturation
-  // instead of greying out, and the up-axis fill is raised to brighten the bottom to
-  // match — the silhouette and south pole read just slightly dimmer than the top, not
-  // shadowed.
-  hemisphere: { skyColor: '#cfe0ff', groundColor: '#9099ad', intensity: 1.0 },
-  key: { color: '#ffffff', intensity: 0.6, position: [0, 10, 0] as [number, number, number] },
-  fill: { color: '#e6eeff', intensity: 0.3, position: [0, -10, 0] as [number, number, number] },
-};
+  terrain: {
+    voxel: 1,
+    relief: 0.5,
+    ringStep: 0.75,
+    poleCap: 20,
+  },
+  lighting: {
+    exposure: 1.45,
+    hemisphere: { skyColor: '#ffffff', groundColor: '#7c89a3', intensity: 1.65 },
+    key: { color: '#ffffff', intensity: 1.9, position: [5, 8, 5] as [number, number, number] },
+    fill: { color: '#dce6ff', intensity: 0.3, position: [-7, -3, 3] as [number, number, number] },
+  },
+} satisfies Required<Omit<PlanetWidgetOptions, 'markers' | 'markerVoxelSize'>>;
 
 const FOV = 45;
 
@@ -199,9 +201,9 @@ const SPIN_DAMPING = 4; // yaw inertia decay after release; higher settles faste
 const MAX_TILT = 1.4; // clamp pitch (~80°) so the globe can't flip past a pole
 // Clouds trail the planet on a rubber band: rather than turning rigidly with it, they ease
 // toward its orientation each frame (first-order smoothing). The follow lag (time constant
-// in seconds) is per-instance (see `clouds.lag`); this is the fallback when unset — larger
-// lags the clouds further behind and settles them slower, 0 makes them turn rigidly.
-const DEFAULT_CLOUD_LAG = 0.05;
+// in seconds) is per-instance (see `clouds.lag`); the fallback when unset is
+// `DEFAULTS.clouds.lag` — larger lags the clouds further behind and settles them slower, 0
+// makes them turn rigidly.
 const _qSpin = new Quaternion();
 const _qTilt = new Quaternion();
 
@@ -253,8 +255,9 @@ export class PlanetWidget {
   private landColor: string;
   private material: Required<PlanetMaterialOptions>;
   private terrain: Required<PlanetTerrainOptions>;
-  private lighting: typeof LIGHTING_DEFAULTS;
+  private lighting: typeof DEFAULTS.lighting;
   private markerConfigs: MarkerConfig[];
+  private markerVoxelSize?: number; // pin cube edge (world units); undefined = per-pin default
   private cloudsEnabled: boolean;
   private cloudGen: BuildCloudsOptions;
   private cloudLag: number; // rubber-band follow lag for the clouds, in seconds
@@ -278,14 +281,14 @@ export class PlanetWidget {
 
   constructor(container: HTMLElement, options: PlanetWidgetOptions = {}) {
     const opts = { ...DEFAULTS, ...options };
-    const material = { ...MATERIAL_DEFAULTS, ...options.material };
-    const terrain = { ...TERRAIN_DEFAULTS, ...options.terrain };
+    const material = { ...DEFAULTS.material, ...options.material };
+    const terrain = { ...DEFAULTS.terrain, ...options.terrain };
     // Per-group shallow merge so a caller can override e.g. just `key.intensity`.
     const lighting = {
-      exposure: options.lighting?.exposure ?? LIGHTING_DEFAULTS.exposure,
-      hemisphere: { ...LIGHTING_DEFAULTS.hemisphere, ...options.lighting?.hemisphere },
-      key: { ...LIGHTING_DEFAULTS.key, ...options.lighting?.key },
-      fill: { ...LIGHTING_DEFAULTS.fill, ...options.lighting?.fill },
+      exposure: options.lighting?.exposure ?? DEFAULTS.lighting.exposure,
+      hemisphere: { ...DEFAULTS.lighting.hemisphere, ...options.lighting?.hemisphere },
+      key: { ...DEFAULTS.lighting.key, ...options.lighting?.key },
+      fill: { ...DEFAULTS.lighting.fill, ...options.lighting?.fill },
     };
     this.container = container;
 
@@ -297,6 +300,7 @@ export class PlanetWidget {
     this.terrain = terrain;
     this.lighting = lighting;
     this.markerConfigs = options.markers ?? [];
+    this.markerVoxelSize = options.markerVoxelSize;
     this.rotationSpeed = opts.rotationSpeed;
     this.autoRotate = opts.autoRotate;
     this.cloudsEnabled = opts.clouds !== false;
@@ -305,7 +309,7 @@ export class PlanetWidget {
     const cloudObj = typeof opts.clouds === 'object' ? opts.clouds : {};
     const { lag: cloudLag, ...cloudGen } = cloudObj;
     this.cloudGen = cloudGen;
-    this.cloudLag = cloudLag ?? DEFAULT_CLOUD_LAG;
+    this.cloudLag = cloudLag ?? DEFAULTS.clouds.lag;
 
     this.scene = new Scene();
     this.background = new Color(opts.background);
@@ -325,32 +329,47 @@ export class PlanetWidget {
     // top-lit cubes don't clip.
     this.renderer.toneMapping = NeutralToneMapping;
     this.renderer.toneMappingExposure = lighting.exposure;
+    // Soft shadow maps: the key light casts real shadows so cubes shade each other, the land
+    // relief drops shadows onto the water, and the clouds cast onto the globe — depth from one
+    // side (unlike a symmetric baked outline). VSM (variance shadow maps) blurs the shadow map
+    // with a Gaussian so the shadows have a soft penumbra instead of a hard voxel-sharp edge
+    // (see the key's `radius`/`blurSamples`), which suits the soft toy look. We render in two
+    // passes (globe+clouds, then markers), so drive the shadow update by hand: refresh it once
+    // per frame before the first pass, not again for the marker overlay (see render).
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = VSMShadowMap;
+    this.renderer.shadowMap.autoUpdate = false;
     this.renderer.domElement.style.display = 'block';
     this.renderer.domElement.style.width = '100%';
     this.renderer.domElement.style.height = '100%';
     container.appendChild(this.renderer.domElement);
 
-    // Soft image-based lighting: a procedural room gives the matte cubes a gentle,
-    // direction-dependent gradient (subtle reflections + occlusion-like falloff) that
-    // direct lights alone can't, so the surface reads as shaded clay instead of flat
-    // fill. Baked once into a PMREM cubemap; the room scene/generator are discarded.
-    const pmrem = new PMREMGenerator(this.renderer);
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    pmrem.dispose();
-
-    // Hemisphere light gives a rotation-independent top→bottom gradient, so a cube's
-    // up/side/down faces always read differently no matter the spin angle. Key + fill from
-    // opposite (Y-axis) poles add contrast without pinning a bright patch to one longitude.
-    // All three are kept as fields so setOptions can retune them live (see applyLighting).
+    // No environment map: the look is carried entirely by a diffuse hemisphere ambient plus
+    // two directional lights (see DEFAULTS). The hemisphere gives a rotation-independent
+    // top→bottom gradient and keeps the shadow side coloured; the key from the upper right
+    // sculpts the form (lit right, shadowed left) as a fixed studio light the planet turns
+    // under, and a weak lower-left fill lifts the deepest shadows. All three are kept as
+    // fields so setOptions can retune them live (see applyLighting).
     this.hemi = new HemisphereLight(
       lighting.hemisphere.skyColor,
       lighting.hemisphere.groundColor,
       lighting.hemisphere.intensity,
     );
     this.key = new DirectionalLight(lighting.key.color, lighting.key.intensity);
-    this.key.position.set(...lighting.key.position);
+    // The key casts the scene's shadows. Its shadow camera sits at the light, so we place the
+    // light well outside the globe along its configured direction (see positionKey) and give it
+    // a soft, biased map big enough to resolve the seams between cubes.
+    this.key.castShadow = true;
+    this.key.shadow.mapSize.set(2048, 2048);
+    this.key.shadow.bias = -0.0002;
+    this.key.shadow.normalBias = 0.1;
+    // VSM Gaussian blur: `radius` is the blur width in texels, `blurSamples` its quality — the
+    // penumbra that turns the hard voxel-sharp edges soft.
+    this.key.shadow.radius = 3.5;
+    this.key.shadow.blurSamples = 25;
     this.fill = new DirectionalLight(lighting.fill.color, lighting.fill.intensity);
     this.fill.position.set(...lighting.fill.position);
+    this.positionKey();
     this.scene.add(this.hemi, this.key, this.fill);
     // Also light the marker layer, so pins are lit the same in the overlay pass.
     for (const light of [this.hemi, this.key, this.fill]) light.layers.enable(MARKER_LAYER);
@@ -405,7 +424,6 @@ export class PlanetWidget {
     if (this.clouds) this.disposeMesh(this.clouds);
     this.disposeMesh(this.planet);
     this.bgTexture?.dispose();
-    this.scene.environment?.dispose();
     this.renderer.dispose();
   }
 
@@ -436,6 +454,7 @@ export class PlanetWidget {
       this.radius = next.radius;
       this.camera.far = this.radius * 10;
       this.camera.updateProjectionMatrix();
+      this.positionKey(); // the shadow camera is fit to the globe, so it tracks the radius
       this.minDistance = this.radius * 1.4;
       this.maxDistance = this.radius * 6;
       // Keep the current zoom within the new bounds.
@@ -455,11 +474,10 @@ export class PlanetWidget {
     }
     if (next.material) {
       const m = next.material;
-      // roughness / metalness / env reflect are live material props; bevel and colour
-      // jitter are baked into the geometry / instance colours, so they need a rebuild.
+      // roughness / metalness are live material props; bevel and colour jitter are baked
+      // into the geometry / instance colours, so they need a rebuild.
       if (m.roughness !== undefined) this.material.roughness = m.roughness;
       if (m.metalness !== undefined) this.material.metalness = m.metalness;
-      if (m.envMapIntensity !== undefined) this.material.envMapIntensity = m.envMapIntensity;
       if (m.bevel !== undefined && m.bevel !== this.material.bevel) {
         this.material.bevel = m.bevel;
         planetDirty = true;
@@ -502,6 +520,10 @@ export class PlanetWidget {
     // Compare by reference: passing the same array (as the demo does each tick) is a no-op.
     if (next.markers !== undefined && next.markers !== this.markerConfigs) {
       this.markerConfigs = next.markers;
+      markersDirty = true;
+    }
+    if (next.markerVoxelSize !== undefined && next.markerVoxelSize !== this.markerVoxelSize) {
+      this.markerVoxelSize = next.markerVoxelSize;
       markersDirty = true;
     }
     if (next.clouds !== undefined) {
@@ -562,6 +584,9 @@ export class PlanetWidget {
       ...this.material,
       ...this.terrain,
     });
+    // Cubes shade each other and take the land relief's shadow onto the water.
+    this.planet.castShadow = true;
+    this.planet.receiveShadow = true;
     this.scene.add(this.planet);
   }
 
@@ -573,7 +598,7 @@ export class PlanetWidget {
     }
     const defaultMarkerSize = this.radius * 0.18;
     this.markers = this.markerConfigs.map((cfg) => {
-      const marker = new Marker({ color: cfg.color, size: cfg.size ?? defaultMarkerSize, voxel: cfg.voxel });
+      const marker = new Marker({ color: cfg.color, size: cfg.size ?? defaultMarkerSize, voxel: this.markerVoxelSize });
       marker.object.layers.set(MARKER_LAYER); // drawn in the overlay pass, on top of the clouds
       this.planet.add(marker.object);
       marker.placeAt(cfg.lat, cfg.lon, this.radius);
@@ -592,6 +617,9 @@ export class PlanetWidget {
     }
     if (this.cloudsEnabled) {
       this.clouds = buildClouds(this.radius, this.cloudGen);
+      // Clouds drop a shadow onto the globe (they trail the spin, so the shadow drifts with
+      // them); they don't receive, staying bright white.
+      this.clouds.castShadow = true;
       this.clouds.quaternion.copy(prevQuat ?? this.planet.quaternion);
       this.scene.add(this.clouds);
     }
@@ -604,17 +632,38 @@ export class PlanetWidget {
     this.hemi.intensity = this.lighting.hemisphere.intensity;
     this.key.color.set(this.lighting.key.color);
     this.key.intensity = this.lighting.key.intensity;
-    this.key.position.set(...this.lighting.key.position);
+    this.positionKey();
     this.fill.color.set(this.lighting.fill.color);
     this.fill.intensity = this.lighting.fill.intensity;
     this.fill.position.set(...this.lighting.fill.position);
+  }
+
+  // Place the key light from its configured position, treated as a *direction*: for a
+  // directional light only the direction to the target (origin) matters for shading, so we
+  // push the light out to `radius · 2.4` along that direction — far enough that its shadow
+  // camera (which sits at the light) sees the whole globe. Then fit that orthographic shadow
+  // camera snugly around the globe so the shadow map's resolution is spent on the planet.
+  private positionKey(): void {
+    const [px, py, pz] = this.lighting.key.position;
+    const dir = new Vector3(px, py, pz);
+    if (dir.lengthSq() === 0) dir.set(0, 1, 0); // degenerate config → straight overhead
+    dir.normalize().multiplyScalar(this.radius * 2.4);
+    this.key.position.copy(dir);
+    const cam = this.key.shadow.camera;
+    const ext = this.radius * 1.15; // half-extent of the globe plus a little margin
+    cam.left = -ext;
+    cam.right = ext;
+    cam.top = ext;
+    cam.bottom = -ext;
+    cam.near = this.radius * 0.6;
+    cam.far = this.radius * 4;
+    cam.updateProjectionMatrix();
   }
 
   private applyLiveMaterial(): void {
     const mat = this.planet.material as MeshStandardMaterial;
     mat.roughness = this.material.roughness;
     mat.metalness = this.material.metalness;
-    mat.envMapIntensity = this.material.envMapIntensity;
   }
 
   private resize = (): void => {
@@ -709,6 +758,9 @@ export class PlanetWidget {
   // pin — so markers never sink into the clouds, while their horizon fade still hides the
   // ones that have turned to the far side.
   private render(): void {
+    // Refresh the shadow map once, for this first (globe + clouds) pass only; the marker
+    // overlay re-renders the scene but its pins don't cast shadows, so skip a second update.
+    this.renderer.shadowMap.needsUpdate = true;
     this.camera.layers.set(0);
     this.renderer.render(this.scene, this.camera); // globe + clouds (clears colour + depth)
 

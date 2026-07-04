@@ -19,8 +19,6 @@ export interface PlanetBuildOptions {
   roughness: number;
   /** Metalness, 0 … 1. */
   metalness: number;
-  /** Environment-map reflection strength. */
-  envMapIntensity: number;
   /** Cube edge chamfer, as a fraction of one cube (catches edge highlights). */
   bevel: number;
   /** Per-cube brightness jitter (± fraction) so the fields aren't dead-flat. */
@@ -250,7 +248,6 @@ export function buildPlanet(opts: PlanetBuildOptions): InstancedMesh {
   const material = new MeshStandardMaterial({
     roughness: opts.roughness,
     metalness: opts.metalness,
-    envMapIntensity: opts.envMapIntensity,
   });
   const mesh = new InstancedMesh(geometry, material, mats.length);
   for (let i = 0; i < mats.length; i++) {

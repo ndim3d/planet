@@ -5,7 +5,7 @@
  * The build turns this into a single self-contained ESM file (`dist/planet-widget.js`)
  * plus type declarations (`dist/index.d.ts` + `dist/widget.d.ts`).
  */
-export { PlanetWidget } from './widget';
+export { PlanetWidget, DEFAULTS } from './widget';
 export type {
   DirectionalLightOptions,
   PlanetCloudOptions,

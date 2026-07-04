@@ -8,7 +8,7 @@
  * (rebuilding only the affected mesh) and preserves the camera/spin — so tweaking a
  * slider no longer resets the view.
  */
-import { PlanetWidget, type MarkerConfig, type PlanetWidgetOptions } from './index';
+import { PlanetWidget, DEFAULTS, type MarkerConfig, type PlanetWidgetOptions } from './index';
 
 // Country pins (approximate centroids). "Asia" is a generic pin over East Asia.
 const MARKERS: MarkerConfig[] = [
@@ -22,59 +22,55 @@ const MARKERS: MarkerConfig[] = [
   { label: 'Indonesia', lat: 0, lon: 114 },
 ];
 
-// Live config, seeded with the widget's own defaults. Flat here for simple binding; the
-// nested `material` / `lighting` groups are assembled in toOptions().
+// Live config for the control panel. Flat here for simple binding; the nested
+// `material` / `lighting` / `clouds` groups are assembled in toOptions().
+//
+// Single source of truth: every value that has a widget default is read from DEFAULTS, so
+// the panel never keeps a second copy. Only the handful of knobs the demo deliberately sets
+// differently (or that aren't widget defaults at all, like the pin voxel and cloud seed) are
+// spelled out as literals below.
+const D = DEFAULTS;
 const config = {
-  radius: 30,
-  background: '#0b0f1a',
-  starfield: true,
-  waterColor: '#2796e0',
-  landColor: '#47b54b',
-  autoRotate: false,
-  rotationSpeed: 0.3,
+  radius: D.radius,
+  background: D.background,
+  // `as boolean` re-widens the satisfies-preserved `true`/`false` literals so the flat
+  // boolean control binding (BoolKey) stays sound.
+  starfield: D.starfield as boolean,
+  waterColor: D.waterColor,
+  landColor: D.landColor,
+  autoRotate: D.autoRotate as boolean,
+  rotationSpeed: D.rotationSpeed,
   // terrain (voxel shape)
-  voxel: 1.0,
-  relief: 0.0,
-  ringStep: 0.05,
-  poleCap: 10,
-  // markers (pins)
-  markerVoxel: 0.16, // pin cube edge in world units (default ≈ size × 0.03)
+  voxel: D.terrain.voxel,
+  relief: D.terrain.relief,
+  ringStep: D.terrain.ringStep,
+  poleCap: D.terrain.poleCap,
+  // markers (pins) — no widget default (pins fall back to a size-proportional voxel); demo
+  // sets an explicit fine voxel for all pins via the widget's markerVoxelSize option.
+  markerVoxelSize: 0.2, // pin cube edge in world units
   // clouds
   cloudsOn: true,
-  cloudCount: 6,
-  cloudSeed: 303,
-  cloudSize: 0.9,
-  cloudVoxel: 1.56, // cloud cube edge length (world units) — default LAND_CUBE * 1.3
-  cloudClearance: 0.45,
-  cloudLag: 0.05,
+  cloudCount: D.clouds.count,
+  cloudSeed: D.clouds.seed,
+  cloudSize: D.clouds.size, // widget default: 1
+  cloudVoxel: D.clouds.voxel,
+  cloudClearance: D.clouds.clearance,
+  cloudLag: D.clouds.lag,
   // material
-  roughness: 0.4,
-  metalness: 0,
-  envMapIntensity: 0.9,
-  bevel: 0.10,
-  colorJitter: 0.07,
+  roughness: D.material.roughness,
+  metalness: D.material.metalness,
+  bevel: D.material.bevel,
+  colorJitter: D.material.colorJitter,
   // lighting
-  exposure: 1.0,
-  skyColor: '#cfe0ff',
-  groundColor: '#9099ad',
-  hemiIntensity: 1.0,
-  keyColor: '#ffffff',
-  keyIntensity: 0.6,
-  fillColor: '#e6eeff',
-  fillIntensity: 0.3,
+  exposure: D.lighting.exposure,
+  skyColor: D.lighting.hemisphere.skyColor,
+  groundColor: D.lighting.hemisphere.groundColor,
+  hemiIntensity: D.lighting.hemisphere.intensity,
+  keyColor: D.lighting.key.color,
+  keyIntensity: D.lighting.key.intensity,
+  fillColor: D.lighting.fill.color,
+  fillIntensity: D.lighting.fill.intensity,
 };
-
-// Markers, rebuilt only when the pin voxel changes so setOptions (which compares the array
-// by reference) treats an unrelated slider drag as a no-op for the pins.
-let markersCache: MarkerConfig[] = MARKERS;
-let markersCacheVoxel: number | undefined;
-function markers(): MarkerConfig[] {
-  if (config.markerVoxel !== markersCacheVoxel) {
-    markersCache = MARKERS.map((m) => ({ ...m, voxel: config.markerVoxel }));
-    markersCacheVoxel = config.markerVoxel;
-  }
-  return markersCache;
-}
 
 function toOptions(): PlanetWidgetOptions {
   return {
@@ -95,7 +91,8 @@ function toOptions(): PlanetWidgetOptions {
           lag: config.cloudLag,
         }
       : false,
-    markers: markers(),
+    markers: MARKERS,
+    markerVoxelSize: config.markerVoxelSize,
     terrain: {
       voxel: config.voxel,
       relief: config.relief,
@@ -105,7 +102,6 @@ function toOptions(): PlanetWidgetOptions {
     material: {
       roughness: config.roughness,
       metalness: config.metalness,
-      envMapIntensity: config.envMapIntensity,
       bevel: config.bevel,
       colorJitter: config.colorJitter,
     },
@@ -258,12 +254,11 @@ if (stage && panel) {
   range(terrain, 'Pole cap°', 'poleCap', 0, 45, 1);
 
   const markerSec = section('Markers');
-  range(markerSec, 'Voxel size', 'markerVoxel', 0.05, 0.5, 0.01);
+  range(markerSec, 'Voxel size', 'markerVoxelSize', 0.05, 0.5, 0.01);
 
   const mat = section('Material');
   range(mat, 'Roughness', 'roughness', 0, 1, 0.05);
   range(mat, 'Metalness', 'metalness', 0, 1, 0.05);
-  range(mat, 'Env reflect', 'envMapIntensity', 0, 2, 0.05);
   range(mat, 'Bevel', 'bevel', 0, 0.5, 0.01);
   range(mat, 'Color jitter', 'colorJitter', 0, 0.3, 0.01);
 

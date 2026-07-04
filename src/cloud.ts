@@ -1,6 +1,5 @@
 import { InstancedMesh, Matrix4, MeshStandardMaterial, Vector3 } from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
-import { LAND_CUBE } from './planet';
 
 interface Lump {
   x: number;
@@ -10,30 +9,32 @@ interface Lump {
 }
 
 // One cartoon cloud as overlapping lumps in voxel units. Local axes: x is width, z is
-// depth (both tangent to the surface), y is height (radially outward once placed). Like
-// the reference the cloud is a broad, flat pad — wide in x and z, low in y — with a few
-// rounded bumps rising on top, and a roughly level bottom.
+// depth (both horizontal once placed), y is height — which grows straight up (world +Y),
+// like the reference, not out along the surface normal. Like the reference the cloud is a
+// broad, flat pad — wide in x and z, low in y — with a few rounded bumps rising on top, and
+// a roughly level bottom.
 const TEMPLATE: readonly Lump[] = [
-  // Broad flat base, spread across width (x) and depth (z), all sitting near y = 0.
-  { x: 0.0, y: 0.0, z: 0.0, r: 2.9 },
-  { x: -3.3, y: 0.0, z: -0.2, r: 2.1 },
-  { x: 3.3, y: -0.1, z: 0.2, r: 2.3 },
-  { x: 0.4, y: 0.0, z: 2.3, r: 1.9 },
-  { x: -0.6, y: 0.0, z: -2.2, r: 1.8 },
-  // A few rounded bumps rising on top.
-  { x: -1.6, y: 1.5, z: 0.1, r: 1.8 },
-  { x: 1.5, y: 1.6, z: 0.4, r: 1.6 },
-  { x: 0.2, y: 1.7, z: -0.7, r: 1.4 },
+  // Broad flat base, spread across width (x) and depth (z), all sitting near y = 0 — this is
+  // the level underside of the cloud.
+  { x: 0.0, y: 0.0, z: 0.0, r: 3.0 },
+  { x: -3.4, y: 0.0, z: -0.2, r: 2.2 },
+  { x: 3.4, y: 0.0, z: 0.2, r: 2.2 },
+  { x: 0.3, y: 0.0, z: 2.4, r: 2.0 },
+  { x: -0.5, y: 0.0, z: -2.3, r: 1.9 },
+  // Distinct rounded bumps rising well above the base — the puffy top of the cumulus.
+  { x: -2.0, y: 2.2, z: 0.1, r: 1.9 },
+  { x: 1.6, y: 2.4, z: 0.3, r: 1.8 },
+  { x: 0.1, y: 2.7, z: -0.6, r: 1.6 },
 ];
 
-// Squashes applied in the lump test. Higher flattens that axis. Depth (z) is kept full
-// so clouds read as plump 3D pads, not plates; height (y) is squashed hard so the pad
-// stays wide and low with a level-ish bottom, matching the flat reference clouds.
+// Squashes applied in the lump test. Higher flattens that axis. Depth (z) is kept full so
+// clouds read as plump 3D pads, not plates; height (y) is only lightly squashed so the base
+// stays broad and level while the bumps still rise into clear humps (see the reference).
 const Z_SQUASH = 1.0;
-const Y_SQUASH = 1.9;
+const Y_SQUASH = 1.35;
 
 // Cloud voxels are a bit larger than the land cubes (see reference).
-const DEFAULT_CLOUD_VOXEL = LAND_CUBE * 1.3;
+const DEFAULT_CLOUD_VOXEL = 1.0;
 
 const DEG2RAD = Math.PI / 180;
 
@@ -59,12 +60,12 @@ export interface BuildCloudsOptions {
   clearance?: number;
 }
 
-const CLOUD_DEFAULTS: Required<BuildCloudsOptions> = {
+export const CLOUD_DEFAULTS: Required<BuildCloudsOptions> = {
   count: 6,
-  seed: 1,
-  size: 1,
+  seed: 303,
+  size: 1.55,
   voxel: DEFAULT_CLOUD_VOXEL,
-  clearance: DEFAULT_CLOUD_VOXEL * 0.6,
+  clearance: 0,
 };
 
 interface Placement {
@@ -143,21 +144,64 @@ function surfaceFrame(latDeg: number, lonDeg: number): {
   return { normal, north, east };
 }
 
+// Face-neighbour directions in the voxel lattice (6-connectivity). Two cubes are "solidly"
+// joined only when they share a whole face — an edge- or corner-only touch reads as a cube
+// barely hanging on. The stored triples are a permutation of the grid coords, but a ±1 step
+// in exactly one component is a shared face whatever the order, so this works on them as-is.
+const FACE_DIRS: ReadonlyArray<readonly [number, number, number]> = [
+  [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
+];
+// Pack a small signed voxel coord triple into one integer key (coords stay well within ±128).
+const packVoxel = (a: number, b: number, c: number): number =>
+  (((a + 128) << 16) | ((b + 128) << 8) | (c + 128)) >>> 0;
+
+/**
+ * Erode a cloud's voxels to a cohesive solid: repeatedly drop every voxel that shares a face
+ * with fewer than two others, until none remain. This peels off the stray cubes that clung to
+ * the body by a single face (or only an edge/corner), so the cloud reads as one welded lump
+ * instead of a blob with loose bits — while a dense cluster (every interior/surface voxel has
+ * 3+ face-neighbours) only loses its lone protruding tips and converges after a pass or two.
+ */
+function cohere(voxels: Array<[number, number, number]>): Array<[number, number, number]> {
+  let current = voxels;
+  const present = new Set(current.map(([a, b, c]) => packVoxel(a, b, c)));
+  for (;;) {
+    const doomed = new Set<number>();
+    for (const [a, b, c] of current) {
+      let n = 0;
+      for (const [dx, dy, dz] of FACE_DIRS) if (present.has(packVoxel(a + dx, b + dy, c + dz))) n++;
+      if (n < 2) doomed.add(packVoxel(a, b, c));
+    }
+    if (doomed.size === 0) return current;
+    const next: Array<[number, number, number]> = [];
+    for (const v of current) {
+      const p = packVoxel(v[0], v[1], v[2]);
+      if (doomed.has(p)) present.delete(p);
+      else next.push(v);
+    }
+    current = next;
+  }
+}
+
 /**
  * Build the background clouds as one white {@link InstancedMesh} of plump voxel cubes (a
  * bit larger than the land cubes). Each cloud is a cluster of overlapping lumps
- * ({@link TEMPLATE}) rasterised on a voxel grid, then placed over a spot on the surface
- * (scattered from {@link BuildCloudsOptions.seed}) and oriented to the local tangent
- * frame: its flat base sits parallel to the ground with the bumps pointing radially out.
+ * ({@link TEMPLATE}) rasterised on a voxel grid, then scattered over the globe (from
+ * {@link BuildCloudsOptions.seed}) and oriented **upright**: its flat base lies in the
+ * horizontal plane and the bumps grow straight up (world +Y), like the reference — the
+ * cloud stands up out of the globe rather than leaning out along the surface normal.
  *
  * `count`, `seed`, `size` and `clearance` (see {@link BuildCloudsOptions}) drive the
- * scatter. Each cloud is floated at the lowest altitude that still leaves `clearance`
- * between its nearest voxel and the sea-level shell, so it hugs the surface without ever
- * intersecting it — even as it rides the planet's spin around to the far side.
+ * scatter. Each cloud is pushed out along its radial direction to the smallest distance at
+ * which its whole upright body still clears the sea-level shell by `clearance`, so it hugs
+ * the globe without intersecting it at any spin angle (the clearance is rigid-rotation
+ * invariant, so it holds as the field turns).
  *
  * Add the mesh to the scene and ease its orientation toward the planet's each frame (see
- * PlanetWidget) so the clouds trail the spin on a rubber band rather than turning rigidly
- * with the globe. Owns its geometry and material; dispose them when done.
+ * PlanetWidget) so the clouds trail the spin on a rubber band. The planet spins about the
+ * vertical pole (Y), and a Y-rotation leaves +Y fixed, so the upright clouds stay upright
+ * as they orbit — only a pitch/tilt drag leans them. Owns its geometry and material; dispose
+ * them when done.
  */
 export function buildClouds(radius: number, options: BuildCloudsOptions = {}): InstancedMesh {
   const count = options.count ?? CLOUD_DEFAULTS.count;
@@ -172,9 +216,11 @@ export function buildClouds(radius: number, options: BuildCloudsOptions = {}): I
 
   // Reused scratch vectors.
   const offset = new Vector3();
-  const east = new Vector3();
-  const north = new Vector3();
-  const normal = new Vector3();
+  const width = new Vector3(); // horizontal, across the cloud (⊥ depth)
+  const depth = new Vector3(); // horizontal, the cloud's outward-facing direction
+  const up = new Vector3(0, 1, 0); // world up — the axis the bumps grow along
+  const normal = new Vector3(); // radial direction of the spot the cloud floats over
+  const o = new Vector3(); // a voxel's offset from the cloud origin (world units)
   const m = new Matrix4();
 
   // Half a voxel of margin so it's the cube's inner *face*, not its centre, that must
@@ -185,13 +231,19 @@ export function buildClouds(radius: number, options: BuildCloudsOptions = {}): I
   for (const place of placements) {
     const s = place.scale;
     const mir = place.mirror ? -1 : 1;
-    const frame = surfaceFrame(place.lat, place.lon);
-    normal.copy(frame.normal);
-    north.copy(frame.north);
-    east.copy(frame.east);
+    normal.copy(surfaceFrame(place.lat, place.lon).normal);
 
-    // Rasterise this cloud's lumps into integer voxel coords (i: width→east,
-    // j: base→top→outward, k: depth→north).
+    // Upright frame: the cloud stands up (bumps along world +Y) wherever it sits. `depth` is
+    // the radial direction flattened into the horizontal plane (so the cloud faces outward),
+    // `width` is the horizontal perpendicular. Near a pole the radial is almost vertical and
+    // its horizontal part vanishes, so fall back to a fixed horizontal facing.
+    depth.set(normal.x, 0, normal.z);
+    if (depth.lengthSq() < 1e-6) depth.set(1, 0, 0);
+    depth.normalize();
+    width.set(depth.z, 0, -depth.x); // = up × depth, horizontal and ⊥ depth
+
+    // Rasterise this cloud's lumps into integer voxel coords (i: width, j: base→top→up,
+    // k: depth).
     let minI = Infinity, maxI = -Infinity;
     let minJ = Infinity, maxJ = -Infinity;
     let minK = Infinity, maxK = -Infinity;
@@ -201,7 +253,7 @@ export function buildClouds(radius: number, options: BuildCloudsOptions = {}): I
       minK = Math.min(minK, (l.z - l.r) * s); maxK = Math.max(maxK, (l.z + l.r) * s);
     }
 
-    const voxels: Array<[number, number, number]> = [];
+    const raw: Array<[number, number, number]> = [];
     for (let i = Math.floor(minI); i <= Math.ceil(maxI); i++) {
       for (let j = Math.floor(minJ); j <= Math.ceil(maxJ); j++) {
         for (let k = Math.floor(minK); k <= Math.ceil(maxK); k++) {
@@ -210,37 +262,41 @@ export function buildClouds(radius: number, options: BuildCloudsOptions = {}): I
             const dy = (j - l.y * s) * Y_SQUASH;
             const dz = (k - l.z * s) * Z_SQUASH;
             if (dx * dx + dy * dy + dz * dz <= l.r * s * (l.r * s)) {
-              voxels.push([i, k, j]); // store as (east i, north k, outward j)
+              raw.push([i, k, j]); // store as (width i, depth k, up j)
               break;
             }
           }
         }
       }
     }
+    // Drop loosely-attached voxels so the cloud reads as one solid lump, not a blob with
+    // stray cubes hanging off by a single face/edge.
+    const voxels = cohere(raw);
 
-    // Distance from the planet centre to the cloud's origin so that every voxel clears
-    // the surface. A voxel sits at `centreR·normal + iv·east + kv·north + jv·normal`, i.e.
-    // at radius √((centreR+jv)² + iv² + kv²) from the centre. Requiring that ≥ `surface`
-    // for the whole cloud gives centreR = maxᵥ(-jv + √(surface² − iv² − kv²)). The base
-    // (lowest jv, near the axis) is what binds; tangential spread only pushes voxels out.
+    // Push the cloud out along `normal` to the smallest distance `centreR` at which every
+    // voxel clears `surface`. A voxel sits at `centreR·normal + o`, where `o` is its upright
+    // offset (width·iv + depth·kv + up·jv); requiring |centreR·normal + o| ≥ surface and
+    // solving the quadratic (normal is a unit vector) gives
+    // centreR ≥ −(normal·o) + √((normal·o)² − |o|² + surface²), maximised over the voxels.
     let centreR = radius;
     for (const [i, k, j] of voxels) {
-      const iv = i * voxel;
-      const kv = k * voxel;
-      const jv = j * voxel;
-      const tang = iv * iv + kv * kv;
-      const need = -jv + Math.sqrt(Math.max(0, surface * surface - tang));
+      o.set(0, 0, 0)
+        .addScaledVector(width, mir * i * voxel)
+        .addScaledVector(depth, k * voxel)
+        .addScaledVector(up, j * voxel);
+      const nDotO = normal.dot(o);
+      const need = -nDotO + Math.sqrt(Math.max(0, nDotO * nDotO - o.lengthSq() + surface * surface));
       if (need > centreR) centreR = need;
     }
 
-    // Emit the voxels as cubes oriented to the frame (so they tile neatly on the tilted
-    // slab) at their world positions.
-    m.makeBasis(east, north, normal); // cube axes: x→east, y→north, z→outward
+    // Emit the voxels as upright cubes at their world positions.
+    m.makeBasis(width, up, depth); // cube axes: x→width, y→up, z→depth
     for (const [i, k, j] of voxels) {
       offset
-        .copy(east).multiplyScalar(mir * i * voxel)
-        .addScaledVector(north, k * voxel)
-        .addScaledVector(normal, centreR + j * voxel);
+        .copy(normal).multiplyScalar(centreR)
+        .addScaledVector(width, mir * i * voxel)
+        .addScaledVector(depth, k * voxel)
+        .addScaledVector(up, j * voxel);
       m.setPosition(offset);
       mats.push(new Matrix4().copy(m));
     }
@@ -251,7 +307,6 @@ export function buildClouds(radius: number, options: BuildCloudsOptions = {}): I
     color: '#ffffff',
     roughness: 0.75,
     metalness: 0,
-    envMapIntensity: 0.5,
   });
   const mesh = new InstancedMesh(geometry, material, mats.length);
   for (let n = 0; n < mats.length; n++) mesh.setMatrixAt(n, mats[n]);
