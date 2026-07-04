@@ -25,39 +25,45 @@ export interface PlanetBuildOptions {
   bevel: number;
   /** Per-cube brightness jitter (± fraction) so the fields aren't dead-flat. */
   colorJitter: number;
+  /** Cube edge length in world units — the voxel resolution. See {@link DEFAULT_VOXEL}. */
+  voxel: number;
+  /** Land relief above sea level, in cubes (extra voxel layers on land). See {@link DEFAULT_RELIEF}. */
+  relief: number;
+  /** Ring-radius quantisation step, as a fraction of a voxel. See {@link DEFAULT_RING_STEP}. */
+  ringStep: number;
+  /** Flat polar-cap half-angle, in degrees. See {@link DEFAULT_POLE_CAP}. */
+  poleCap: number;
 }
 
-// Whether to draw continents (raised LAND_RELIEF cubes above the ocean).
+// Whether to draw continents (raised land cubes above the ocean).
 const SHOW_LAND = true;
 
-// Edge length of one surface cube (tangentially, and along the parallel). The sphere
-// is tiled by a single layer of these — one cube per lat/lon cell — so the radius is
-// effectively measured in cubes (R / CUBE cubes from the centre to sea level).
-const CUBE = 1.2;
-
-// Continental relief, in cubes (fractional is fine): land cubes sit this proud of the
-// ocean shell. Below 1 the land is only partly lifted — it sits "sunk" into the sea
-// rather than standing a full cube tall.
-const LAND_RELIEF = 0.4;
-
-// Radial depth of a cube. At least a full cube deep (so cubes read as cubes, not thin
-// tiles) and never less than the relief height, so a raised land cube's side wall
-// covers the coastal cliff down to the water — no gap into the dark interior, and no
-// land cube left flush with the sea.
-const THICKNESS = CUBE * Math.max(1, LAND_RELIEF + 0.2);
-
-// Grow cubes a hair tangentially and along the parallel so neighbours abut despite
-// the faceting (the sphere is a coarse polygon up close). Radially they just stack,
-// so no radial overlap — that only causes coplanar z-fighting.
-const OVERLAP = 1.04;
+// Defaults for the tunable terrain knobs. Also the single source of truth for the
+// exported LAND_CUBE / LAND_TOP_OFFSET below, which clouds and markers key off.
+/** Cube edge length (world units) — the voxel lattice pitch. */
+export const DEFAULT_VOXEL = 1.2;
+/** Continental relief: land is raised this many voxel layers above the ocean surface. */
+export const DEFAULT_RELIEF = 1.0;
+/**
+ * Ring-radius quantisation, as a fraction of a voxel. `1` = rings step in by a whole voxel
+ * (chunky); smaller (e.g. `0.5`) lets a ring's radius track the sphere in sub-voxel steps,
+ * so the curvature reads smoother without shrinking the cubes.
+ */
+export const DEFAULT_RING_STEP = 1.0;
+/**
+ * Flat polar cap half-angle, in degrees. The rings only run from the equator up to this
+ * far from each pole; inside the cap the polar disk is tiled flat, so the rings never
+ * collapse into a stretched singularity. `0` disables the cap (rings run to the pole).
+ */
+export const DEFAULT_POLE_CAP = 20;
 
 const DEG2RAD = Math.PI / 180;
 
 /** Outward distance from sea level to a land cube's top face (where markers sit). */
-export const LAND_TOP_OFFSET = LAND_RELIEF * CUBE;
+export const LAND_TOP_OFFSET = DEFAULT_RELIEF * DEFAULT_VOXEL;
 
 /** World edge length of one surface (land/water) cube; clouds size their voxels off this. */
-export const LAND_CUBE = CUBE;
+export const LAND_CUBE = DEFAULT_VOXEL;
 
 /**
  * Map a geographic `[lat, lon]` (degrees) to the point on the land-top shell and the
@@ -91,16 +97,22 @@ export function geoToSurface(
 }
 
 /**
- * Build the planet as a single {@link InstancedMesh}: a **UV-sphere of cubes**.
+ * Build the planet as a single {@link InstancedMesh}: a **voxel solid of revolution**.
  *
- * One cube per latitude/longitude cell, laid in a single shell. Rows follow the
- * parallels at an even arc spacing ({@link CUBE}); each row carries `round(2πρ/CUBE)`
- * cubes, so they stay roughly square from the equator to the poles and thin out
- * pole-ward. Every cube is oriented by a local tangent frame (east / north / outward),
- * so the cube faces tile the sphere — neat rows of squares with a smooth, round
- * silhouette, not a Cartesian-lattice staircase. Land cells are pushed
- * {@link LAND_RELIEF} cube(s) outward onto the `R + relief` shell; their side walls
- * (depth {@link THICKNESS}) close the coastal cliff, so the shell stays watertight.
+ * The globe is a stack of latitude rings (like the reference art). Each layer is one
+ * voxel ({@link PlanetBuildOptions.voxel}) tall along the polar axis; its ring radius is
+ * the sphere's radius at that height *quantised* (to {@link PlanetBuildOptions.ringStep}
+ * of a voxel). The radius holds for several layers — a vertical wall of cubes, correct
+ * where the surface is near-vertical (the equator) — and steps inward where the sphere
+ * curves away. Cubes yaw around the axis to face outward, tops flat, so they read as even
+ * horizontal rows rather than a Cartesian bump field or a gnomonic terrace bullseye.
+ *
+ * Where the sphere curves away fast (toward the poles) the radius drops by more than a
+ * voxel between layers; that ledge is tiled with several **one-voxel** concentric rings
+ * rather than one stretched deep cube, so the surface never steps by more than a voxel and
+ * every cube keeps its bevels. The polar neighbourhood ({@link PlanetBuildOptions.poleCap})
+ * is tiled flat instead of collapsing the rings into a stretched singularity. Land is
+ * pushed {@link PlanetBuildOptions.relief} out.
  *
  * The returned mesh owns its geometry and material; dispose them when done.
  */
@@ -109,17 +121,20 @@ export function buildPlanet(opts: PlanetBuildOptions): InstancedMesh {
   const water = new Color(opts.waterColor);
   const land = new Color(opts.landColor);
 
+  const CUBE = opts.voxel; // world-axis lattice pitch (cube edge)
+  const relief = opts.relief * CUBE; // land raised this far (in world units) above the ocean
+
   const mats: Matrix4[] = [];
   const cols: Color[] = [];
-  const ex = new Vector3();
-  const ey = new Vector3();
-  const ez = new Vector3();
+  const ex = new Vector3(); // tangential — around the parallel
+  const ez = new Vector3(); // outward — radial, in the XZ plane
+  const ey = new Vector3(0, 1, 0); // up — along the polar axis
   const pos = new Vector3();
   const scl = new Vector3();
   const m = new Matrix4();
   const tint = new Color();
 
-  // Emit one cube: local x→`ex`, y→`ey`, z→`ez`, scaled by (sx,sy,sz), at `(px,py,pz)`.
+  // Emit one cube with local axes ex/ey/ez, scaled (sx,sy,sz), centred at (px,py,pz).
   const pushCube = (
     px: number, py: number, pz: number,
     exv: Vector3, eyv: Vector3, ezv: Vector3,
@@ -137,15 +152,16 @@ export function buildPlanet(opts: PlanetBuildOptions): InstancedMesh {
     cols.push(tint.clone());
   };
 
-  // Land/water by a majority vote over the cube's footprint, so the coastline doesn't
-  // alias to a single sample. The latitude footprint is fixed; the longitude footprint
-  // widens pole-ward, so it's passed in per row (`360 / nLon`).
+  // Land/water by a majority vote over the cell's angular footprint, so the coastline
+  // doesn't alias to a single sample. Footprint ≈ one voxel's angular size (CUBE / R);
+  // the longitude footprint widens toward the poles.
   const latFootDeg = (CUBE / R) * 57.2958;
-  const dirIsLand = (
-    latDeg: number,
-    lonDeg: number,
-    lonFootDeg: number,
-  ): boolean => {
+  const dirIsLand = (px: number, py: number, pz: number): boolean => {
+    const len = Math.hypot(px, py, pz);
+    if (len === 0) return false;
+    const latDeg = Math.asin(Math.max(-1, Math.min(1, py / len))) * 57.2958;
+    const lonDeg = Math.atan2(-pz, px) * 57.2958; // atan2 is scale-invariant, so raw coords are fine
+    const lonFootDeg = latFootDeg / Math.max(Math.cos(latDeg * DEG2RAD), 0.15);
     let votes = 0;
     for (const dA of [-latFootDeg / 2, 0, latFootDeg / 2]) {
       for (const dB of [-lonFootDeg / 2, 0, lonFootDeg / 2]) {
@@ -156,44 +172,77 @@ export function buildPlanet(opts: PlanetBuildOptions): InstancedMesh {
     return votes >= 5;
   };
 
-  const relief = LAND_RELIEF * CUBE;
-  const nLat = Math.max(1, Math.round((Math.PI * R) / CUBE));
-  const dLat = Math.PI / nLat;
-  const latExtent = R * dLat * OVERLAP; // ~CUBE tall along the parallel
+  // Grow cubes a hair so neighbours abut despite the faceting.
+  const OVERLAP = 1.04;
+  const ringStepW = Math.max(0.05, opts.ringStep) * CUBE; // radial quantisation step (world units)
+  const capAngle = opts.poleCap * DEG2RAD; // flat-cap half-angle at each pole
+  const yCapMax = R * Math.cos(capAngle); // |y| beyond which the surface is tiled flat
+  const iyCap = Math.max(1, Math.floor(yCapMax / CUBE)); // top/bottom layer = flat cap
 
-  for (let iLat = 0; iLat < nLat; iLat++) {
-    const lat = -Math.PI / 2 + (iLat + 0.5) * dLat;
-    const cosLat = Math.cos(lat);
-    const sinLat = Math.sin(lat);
-    const rho = R * cosLat; // distance from the spin axis
-    const latDeg = (lat * 180) / Math.PI;
+  // Quantised ring radius at height `yy`: the sphere radius rounded to whole ring steps.
+  const rhoAt = (yy: number): number => {
+    const ri = Math.sqrt(Math.max(0, R * R - yy * yy));
+    return Math.max(CUBE, Math.round(ri / ringStepW) * ringStepW);
+  };
 
-    const nLon = Math.max(1, Math.round((2 * Math.PI * rho) / CUBE));
-    const dLon = (2 * Math.PI) / nLon;
-    const lonExtent = ((2 * Math.PI * rho) / nLon) * OVERLAP; // ~CUBE wide
-    const lonFootDeg = 360 / nLon;
-
-    for (let iLon = 0; iLon < nLon; iLon++) {
-      const th = -Math.PI + (iLon + 0.5) * dLon;
-      const ct = Math.cos(th);
-      const st = Math.sin(th);
-      const lonDeg = (th * 180) / Math.PI;
-      const isLandHere = SHOW_LAND ? dirIsLand(latDeg, lonDeg, lonFootDeg) : false;
-
-      // Local tangent frame, outward-facing. `north` is tilted along the parallel so
-      // the cube tops tile the sphere instead of standing up as vertical walls.
-      ex.set(-st, 0, -ct); // east — along the parallel (longitude)
-      ey.set(-sinLat * ct, cosLat, sinLat * st); // north — along the meridian (latitude)
-      ez.set(cosLat * ct, sinLat, -cosLat * st); // outward radial
-
-      // Centre the cube so its outer face lands on R (water) or R + relief (land).
-      const rCenter = R + (isLandHere ? relief : 0) - THICKNESS / 2;
+  // Emit one ring of outward-facing cubes: radius `r`, height `y`, each one voxel deep and
+  // one voxel tall, coloured per direction (so a ring can cross a coastline).
+  const emitRing = (r: number, y: number): void => {
+    const nt = Math.max(1, Math.round((2 * Math.PI * r) / CUBE)); // cubes around, ~square
+    const dTheta = (2 * Math.PI) / nt;
+    const arc = (2 * Math.PI * r) / nt;
+    for (let it = 0; it < nt; it++) {
+      const th = (it + 0.5) * dTheta;
+      const ct = Math.cos(th), st = Math.sin(th);
+      ex.set(-st, 0, -ct); // tangent, around the parallel
+      ez.set(ct, 0, -st); // outward radial (matches geoToSurface: lon = atan2(-z, x))
+      const isLandHere = SHOW_LAND && dirIsLand(ez.x * r, y, ez.z * r);
+      const thick = CUBE + (isLandHere ? relief : 0); // one voxel deep (+ the coastal cliff)
+      const outerR = r + (isLandHere ? relief : 0);
+      const rc = outerR - thick / 2; // centre so the outward face lands on outerR
       pushCube(
-        ez.x * rCenter, ez.y * rCenter, ez.z * rCenter,
+        ez.x * rc, y, ez.z * rc,
         ex, ey, ez,
-        lonExtent, latExtent, THICKNESS,
+        arc * OVERLAP, CUBE * OVERLAP, thick,
         isLandHere ? land : water,
       );
+    }
+  };
+
+  // Latitude rings from the equator up to the cap boundary — one layer (CUBE) tall each.
+  // Where the sphere curves away fast (toward the poles) the radius drops by more than a
+  // voxel between layers; rather than one stretched deep cube, that ledge is tiled with
+  // several **one-voxel** concentric rings, so the surface never steps by more than a voxel
+  // and every cube keeps its bevels.
+  for (let iy = -(iyCap - 1); iy <= iyCap - 1; iy++) {
+    const y = iy * CUBE;
+    const rhoOuter = rhoAt(y);
+    const innerLimit = rhoAt(Math.abs(y) + CUBE); // radius of the next layer toward the pole
+    // Tile from the outward wall inward to one voxel *past* the next layer, so the shell is
+    // two rings thick everywhere: a second ring always sits behind the bevel grooves and the
+    // sub-voxel gap between layers, closing any see-through into the hollow interior. Each
+    // cube stays one voxel (no stretching); the backing ring is hidden except in the grooves.
+    for (let r = rhoOuter; r >= innerLimit - CUBE - 1e-6; r -= CUBE) emitRing(r, y);
+  }
+
+  // Flat polar caps: the cap layer replaces the top ring (no duplicate same-radius ring +
+  // cap), tiling the polar disk flat with upright cubes. Land on the cap is raised toward
+  // the pole by the relief.
+  const capRho = rhoAt(iyCap * CUBE);
+  const capFill = capRho + CUBE * 0.6; // reach a touch past the last ring so the rim has no seam
+  const gN = Math.ceil(capFill / CUBE);
+  ex.set(1, 0, 0);
+  ez.set(0, 0, 1);
+  for (const s of [1, -1] as const) {
+    const capY = s * iyCap * CUBE;
+    for (let gi = -gN; gi <= gN; gi++) {
+      for (let gk = -gN; gk <= gN; gk++) {
+        const gx = gi * CUBE, gz = gk * CUBE;
+        if (gx * gx + gz * gz > capFill * capFill) continue;
+        const isLandHere = SHOW_LAND && dirIsLand(gx, capY, gz);
+        const yy = capY + (isLandHere ? s * relief : 0);
+        pushCube(gx, yy, gz, ex, ey, ez, CUBE * OVERLAP, CUBE, CUBE * OVERLAP, isLandHere ? land : water);
+      }
     }
   }
 

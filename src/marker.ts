@@ -14,6 +14,12 @@ export interface MarkerOptions {
   color?: string;
   /** Overall pin height in world units. Defaults to `3`. */
   size?: number;
+  /**
+   * Edge length of one pin cube, in world units — the pin's voxel resolution. Smaller
+   * cubes render the pin with more, finer voxels. Defaults to a small fraction of `size`
+   * ({@link DEFAULT_VOXEL_FRACTION}) so the pin keeps the same fine look at any size.
+   */
+  voxel?: number;
 }
 
 /** A marker to place on the planet: a geographic point plus its appearance. */
@@ -26,34 +32,49 @@ export interface MarkerConfig extends MarkerOptions {
   label?: string;
 }
 
-// The pin is a teardrop voxelised in its own plane: a round head with a hole, blending
-// into a point below. The shape is described analytically (head circle + the tangent
-// "cone" down to the tip) and rasterised at RES, so the voxels can be made smaller just
-// by raising RES — no hand-drawn mask to redo. Units: head radius = 1, head centred at
-// the origin, tip at TIP_Y; the whole pin spans TIP_Y … (1) tall.
+// The pin is a teardrop voxelised in its own plane: a round head with a hole, tapering
+// down to a ROUNDED tip — a small circular cap, not a sharp point. The shape is described
+// analytically (head circle + straight tangents down to a small tip circle) and rasterised
+// at the chosen voxel size, so the voxels can be made finer just by shrinking the voxel —
+// no hand-drawn mask to redo. Units: head radius = 1, head centred at the origin; the pin
+// spans BOTTOM_Y … (1) tall.
 const HEAD_R = 1;
 const HOLE_R = 0.42; // hole radius (the see-through centre of the head)
-const TIP_Y = -2.2; // tip apex, below the head
-// Voxels across the head diameter — the knob for voxel smallness (higher = smaller).
-const RES = 16;
+// Virtual cone apex below the head: the straight sides are the tangents from this point to
+// the head circle. The pin is rounded off at TIP_R before it reaches the apex, so it ends
+// in a smooth cap instead of a sharp point.
+const APEX_Y = -2.2;
+const TIP_R = 0.42; // radius of the rounded bottom cap (was a sharp tip)
 
-// Voxels through the slab. The pin is no longer billboarded, so this thickness is
-// genuinely seen edge-on as the planet turns — keep it a few voxels for a clear side.
-const DEPTH = 3;
+// Default pin voxel edge, as a fraction of the pin's height — so a pin keeps the same fine
+// voxel look at any `size`. Small enough to read as many little cubes.
+const DEFAULT_VOXEL_FRACTION = 0.03;
 
-// Tangent ("cone") from the tip to the head circle, precomputed: below TANGENT_Y the
-// outline is the straight taper of half-slope TAN_THETA; above it, it's the head circle.
-const TIP_DIST = -TIP_Y; // tip distance from head centre
-const TANGENT_Y = -(HEAD_R * HEAD_R) / TIP_DIST;
-const TAN_THETA = HEAD_R / Math.sqrt(TIP_DIST * TIP_DIST - HEAD_R * HEAD_R);
+// Slab thickness in normalised units. The pin isn't billboarded, so this depth is seen
+// edge-on as the planet turns; kept ~constant in world terms (voxel count scales with the
+// resolution) for a clear side no matter how fine the voxels are.
+const DEPTH_NORM = 0.4;
+
+// Straight tangents ("cone") from the apex to the head circle, precomputed: below TANGENT_Y
+// the outline is the straight taper of half-slope TAN_THETA; above it, the head circle. The
+// same tangents are tangent to the rounded tip circle, so the sides flow into the cap.
+const APEX_DIST = -APEX_Y; // apex distance from the head centre
+const SIN_THETA = HEAD_R / APEX_DIST; // sine of the taper half-angle
+const TANGENT_Y = -(HEAD_R * HEAD_R) / APEX_DIST;
+const TAN_THETA = HEAD_R / Math.sqrt(APEX_DIST * APEX_DIST - HEAD_R * HEAD_R);
+const TIP_CY = APEX_Y + TIP_R / SIN_THETA; // centre of the rounded tip circle (on the axis)
+const BOTTOM_Y = TIP_CY - TIP_R; // lowest point of the pin (bottom of the cap)
 
 /** Whether a point (in the pin's normalised plane) is inside the filled teardrop. */
 function inPin(x: number, y: number): boolean {
   const distSq = x * x + y * y;
   if (distSq <= HOLE_R * HOLE_R) return false; // the hole
   if (distSq <= HEAD_R * HEAD_R) return true; // the head disk
-  // The tapered point: inside the straight cone from the tip up to the tangent.
-  return y >= TIP_Y && y <= TANGENT_Y && Math.abs(x) <= (y - TIP_Y) * TAN_THETA;
+  // The rounded tip: a small circular cap where the sharp point used to be.
+  const dyc = y - TIP_CY;
+  if (x * x + dyc * dyc <= TIP_R * TIP_R) return true;
+  // The straight tapered sides, from the cap up to the head tangent.
+  return y >= TIP_CY && y <= TANGENT_Y && Math.abs(x) <= (y - APEX_Y) * TAN_THETA;
 }
 
 const WORLD_UP = new Vector3(0, 1, 0);
@@ -93,8 +114,8 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
  * face toward the viewer) wherever that clears the surface, and in the southern
  * hemisphere — where vertical would dip into the globe — tilts the up-axis outward along
  * the normal just enough to clear it ({@link OUTWARD_TILT}). It reads face-on at the
- * front, turns to show its {@link DEPTH} thickness toward the limb, and is parented to
- * the planet to ride the spin; {@link Marker.update} only fades/hides it across the horizon.
+ * front, turns to show its slab thickness toward the limb, and is parented to the planet
+ * to ride the spin; {@link Marker.update} only fades/hides it across the horizon.
  *
  * Parent {@link Marker.object} to the planet mesh and call {@link Marker.update} each
  * frame. Owns its geometry and material; call {@link Marker.dispose} when done.
@@ -107,19 +128,23 @@ export class Marker {
     const color = options.color ?? '#e8453d';
     const size = options.size ?? 3;
 
-    // Rasterise the teardrop on a grid of pitch `pitch` (in normalised units), then
-    // scale so the whole pin (TIP_Y … head top) is `size` tall in world units.
-    const pitch = (2 * HEAD_R) / RES;
-    const spanY = HEAD_R - TIP_Y; // normalised pin height
-    const scale = size / spanY;
-    const voxel = pitch * scale; // world edge of one voxel
+    // Scale so the whole pin (BOTTOM_Y … head top) is `size` tall in world units, then
+    // rasterise the teardrop on a grid whose pitch is the requested world voxel expressed
+    // in normalised units. `voxel` defaults to a fraction of `size` (see above).
+    const spanY = HEAD_R - BOTTOM_Y; // normalised pin height (incl. the rounded tip)
+    const scale = size / spanY; // world units per normalised unit
+    const voxel = options.voxel ?? size * DEFAULT_VOXEL_FRACTION; // world edge of one voxel
+    const pitch = voxel / scale; // grid pitch in normalised units
+    // Depth in voxels, from a ~constant world thickness — so finer voxels give a thicker
+    // stack of thinner cubes, keeping the slab's side roughly the same size on screen.
+    const depth = Math.max(1, Math.round(DEPTH_NORM / pitch));
 
     // Voxel-centre coords in the pin's plane: x symmetric about 0, y from the tip up.
     const nx = Math.ceil((HEAD_R + pitch) / pitch);
-    const ny = Math.ceil((HEAD_R - TIP_Y) / pitch);
+    const ny = Math.ceil((HEAD_R - BOTTOM_Y) / pitch);
     const cells: [number, number][] = [];
     for (let j = 0; j < ny; j++) {
-      const y = TIP_Y + (j + 0.5) * pitch;
+      const y = BOTTOM_Y + (j + 0.5) * pitch;
       for (let i = -nx; i <= nx; i++) {
         const x = i * pitch;
         if (inPin(x, y)) cells.push([x, y]);
@@ -138,15 +163,15 @@ export class Marker {
       envMapIntensity: 0.9,
     });
 
-    const mesh = new InstancedMesh(geometry, this.material, cells.length * DEPTH);
+    const mesh = new InstancedMesh(geometry, this.material, cells.length * depth);
     mesh.renderOrder = 10;
     const m = new Matrix4();
     let i = 0;
     for (const [x, y] of cells) {
       const wx = x * scale;
-      const wy = (y - TIP_Y) * scale; // tip bottom lands on y = 0, head climbs in +Y
-      for (let d = 0; d < DEPTH; d++) {
-        const wz = (d - (DEPTH - 1) / 2) * voxel;
+      const wy = (y - BOTTOM_Y) * scale; // pin bottom lands on y = 0, head climbs in +Y
+      for (let d = 0; d < depth; d++) {
+        const wz = (d - (depth - 1) / 2) * voxel;
         m.makeTranslation(wx, wy, wz);
         mesh.setMatrixAt(i++, m);
       }

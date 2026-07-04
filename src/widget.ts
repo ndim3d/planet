@@ -1,4 +1,5 @@
 import {
+  CanvasTexture,
   Color,
   DirectionalLight,
   HemisphereLight,
@@ -13,8 +14,9 @@ import {
   WebGLRenderer,
 } from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { buildPlanet } from './planet';
+import { buildPlanet, DEFAULT_VOXEL, DEFAULT_RELIEF, DEFAULT_RING_STEP, DEFAULT_POLE_CAP } from './planet';
 import { buildClouds, type BuildCloudsOptions } from './cloud';
+import { buildStarfield, type StarfieldOptions } from './starfield';
 import { Marker, type MarkerConfig } from './marker';
 
 /** Tunables of one directional light. All fields optional. */
@@ -60,6 +62,18 @@ export interface PlanetMaterialOptions {
   colorJitter?: number;
 }
 
+/** Terrain / voxel-shape tunables. All fields optional. */
+export interface PlanetTerrainOptions {
+  /** Cube edge length in world units — the voxel lattice pitch. Defaults to `1.2`. */
+  voxel?: number;
+  /** Land relief in voxel layers raised above the ocean. Defaults to `1.0`. */
+  relief?: number;
+  /** Ring-radius step, as a fraction of a voxel (smaller = smoother curvature). Defaults to `1.0`. */
+  ringStep?: number;
+  /** Flat polar-cap half-angle in degrees (bigger = larger flat cap at the poles). Defaults to `20`. */
+  poleCap?: number;
+}
+
 /** Cloud generation + behaviour tunables. Extends the field-scatter options with `lag`. */
 export interface PlanetCloudOptions extends BuildCloudsOptions {
   /**
@@ -74,6 +88,12 @@ export interface PlanetCloudOptions extends BuildCloudsOptions {
 export interface PlanetWidgetOptions {
   /** Background color of the scene (any CSS / hex color). Defaults to `#0b0f1a`. */
   background?: string;
+  /**
+   * Static pixel-star field drawn over the {@link PlanetWidgetOptions.background} colour.
+   * Pass `true` for the default field, a {@link StarfieldOptions} object to tune it, or
+   * omit / `false` for a plain solid background. Fully procedural (no image asset).
+   */
+  starfield?: boolean | StarfieldOptions;
   /** Water color. Defaults to `#2796e0` (blue). */
   waterColor?: string;
   /** Land color. Defaults to `#47b54b` (green). */
@@ -86,6 +106,8 @@ export interface PlanetWidgetOptions {
   autoRotate?: boolean;
   /** Surface material / cube appearance. Omitted fields keep their defaults. */
   material?: PlanetMaterialOptions;
+  /** Terrain / voxel shape (resolution, land relief, terrace step). Omitted fields keep their defaults. */
+  terrain?: PlanetTerrainOptions;
   /** Lighting and tone mapping. Omitted fields keep their defaults. */
   lighting?: PlanetLightingOptions;
   /**
@@ -103,12 +125,16 @@ export interface PlanetWidgetOptions {
 
 const DEFAULTS: Required<Omit<PlanetWidgetOptions, 'material' | 'lighting' | 'markers'>> = {
   background: '#0b0f1a',
+  starfield: false,
   waterColor: '#2796e0',
   landColor: '#47b54b',
-  radius: 20,
+  radius: 30,
   rotationSpeed: 0.1,
   autoRotate: true,
   clouds: true,
+  terrain: {
+    relief: 0.5,
+  },
 };
 
 // Glossy-plastic toy look (see reference): a low roughness gives the soft specular
@@ -122,6 +148,13 @@ const MATERIAL_DEFAULTS: Required<PlanetMaterialOptions> = {
   envMapIntensity: 0.9,
   bevel: 0.12,
   colorJitter: 0.07,
+};
+
+const TERRAIN_DEFAULTS: Required<PlanetTerrainOptions> = {
+  voxel: DEFAULT_VOXEL,
+  relief: DEFAULT_RELIEF,
+  ringStep: DEFAULT_RING_STEP,
+  poleCap: DEFAULT_POLE_CAP,
 };
 
 // The planet spins around Y, so only lighting that is symmetric about the Y axis keeps
@@ -209,6 +242,9 @@ export class PlanetWidget {
   private readonly fill: DirectionalLight;
   // Scene background colour, mutated in place by setOptions.
   private readonly background: Color;
+  // Static star-field config + its generated texture (when enabled); see applyBackground.
+  private starfield: StarfieldOptions | false;
+  private bgTexture?: CanvasTexture;
 
   // Normalised, live-editable copy of the resolved options; setOptions edits these in
   // place and rebuilds only the mesh (planet / markers / clouds) each change touches.
@@ -216,6 +252,7 @@ export class PlanetWidget {
   private waterColor: string;
   private landColor: string;
   private material: Required<PlanetMaterialOptions>;
+  private terrain: Required<PlanetTerrainOptions>;
   private lighting: typeof LIGHTING_DEFAULTS;
   private markerConfigs: MarkerConfig[];
   private cloudsEnabled: boolean;
@@ -242,6 +279,7 @@ export class PlanetWidget {
   constructor(container: HTMLElement, options: PlanetWidgetOptions = {}) {
     const opts = { ...DEFAULTS, ...options };
     const material = { ...MATERIAL_DEFAULTS, ...options.material };
+    const terrain = { ...TERRAIN_DEFAULTS, ...options.terrain };
     // Per-group shallow merge so a caller can override e.g. just `key.intensity`.
     const lighting = {
       exposure: options.lighting?.exposure ?? LIGHTING_DEFAULTS.exposure,
@@ -256,6 +294,7 @@ export class PlanetWidget {
     this.waterColor = opts.waterColor;
     this.landColor = opts.landColor;
     this.material = material;
+    this.terrain = terrain;
     this.lighting = lighting;
     this.markerConfigs = options.markers ?? [];
     this.rotationSpeed = opts.rotationSpeed;
@@ -270,7 +309,8 @@ export class PlanetWidget {
 
     this.scene = new Scene();
     this.background = new Color(opts.background);
-    this.scene.background = this.background;
+    this.starfield = opts.starfield === true ? {} : opts.starfield || false;
+    this.applyBackground();
 
     this.camera = new PerspectiveCamera(FOV, 1, 0.1, opts.radius * 10);
     // Pull back far enough to fit the planet's radius in view, with margin.
@@ -364,6 +404,7 @@ export class PlanetWidget {
     for (const marker of this.markers) marker.dispose();
     if (this.clouds) this.disposeMesh(this.clouds);
     this.disposeMesh(this.planet);
+    this.bgTexture?.dispose();
     this.scene.environment?.dispose();
     this.renderer.dispose();
   }
@@ -381,7 +422,13 @@ export class PlanetWidget {
     let markersDirty = false;
     let cloudsDirty = false;
 
-    if (next.background !== undefined) this.background.set(next.background);
+    let backgroundDirty = false;
+    if (next.background !== undefined) { this.background.set(next.background); backgroundDirty = true; }
+    if (next.starfield !== undefined) {
+      this.starfield = next.starfield === true ? {} : next.starfield || false;
+      backgroundDirty = true;
+    }
+    if (backgroundDirty) this.applyBackground();
     if (next.rotationSpeed !== undefined) this.rotationSpeed = next.rotationSpeed;
     if (next.autoRotate !== undefined) this.autoRotate = next.autoRotate;
 
@@ -423,6 +470,14 @@ export class PlanetWidget {
       }
       this.applyLiveMaterial();
     }
+    if (next.terrain) {
+      // All three reshape the cube grid, so any change means a geometry rebuild.
+      const t = next.terrain;
+      if (t.voxel !== undefined && t.voxel !== this.terrain.voxel) { this.terrain.voxel = t.voxel; planetDirty = true; }
+      if (t.relief !== undefined && t.relief !== this.terrain.relief) { this.terrain.relief = t.relief; planetDirty = true; }
+      if (t.ringStep !== undefined && t.ringStep !== this.terrain.ringStep) { this.terrain.ringStep = t.ringStep; planetDirty = true; }
+      if (t.poleCap !== undefined && t.poleCap !== this.terrain.poleCap) { this.terrain.poleCap = t.poleCap; planetDirty = true; }
+    }
     if (next.lighting) {
       const l = next.lighting;
       if (l.exposure !== undefined) this.lighting.exposure = l.exposure;
@@ -461,6 +516,7 @@ export class PlanetWidget {
           if (g.count !== undefined && g.count !== this.cloudGen.count) { this.cloudGen.count = g.count; cloudsDirty = true; }
           if (g.seed !== undefined && g.seed !== this.cloudGen.seed) { this.cloudGen.seed = g.seed; cloudsDirty = true; }
           if (g.size !== undefined && g.size !== this.cloudGen.size) { this.cloudGen.size = g.size; cloudsDirty = true; }
+          if (g.voxel !== undefined && g.voxel !== this.cloudGen.voxel) { this.cloudGen.voxel = g.voxel; cloudsDirty = true; }
           if (g.clearance !== undefined && g.clearance !== this.cloudGen.clearance) { this.cloudGen.clearance = g.clearance; cloudsDirty = true; }
         }
       }
@@ -470,6 +526,19 @@ export class PlanetWidget {
     if (planetDirty) this.rebuildPlanet();
     if (planetDirty || markersDirty) this.rebuildMarkers();
     if (cloudsDirty) this.rebuildClouds();
+  }
+
+  // Set scene.background to either the solid colour or a generated star-field texture (over
+  // that colour). Regenerated whenever the background colour or star-field config changes.
+  private applyBackground(): void {
+    this.bgTexture?.dispose();
+    this.bgTexture = undefined;
+    if (this.starfield) {
+      this.bgTexture = buildStarfield(`#${this.background.getHexString()}`, this.starfield);
+      this.scene.background = this.bgTexture;
+    } else {
+      this.scene.background = this.background;
+    }
   }
 
   private disposeMesh(mesh: InstancedMesh): void {
@@ -491,6 +560,7 @@ export class PlanetWidget {
       waterColor: this.waterColor,
       landColor: this.landColor,
       ...this.material,
+      ...this.terrain,
     });
     this.scene.add(this.planet);
   }
@@ -503,7 +573,7 @@ export class PlanetWidget {
     }
     const defaultMarkerSize = this.radius * 0.18;
     this.markers = this.markerConfigs.map((cfg) => {
-      const marker = new Marker({ color: cfg.color, size: cfg.size ?? defaultMarkerSize });
+      const marker = new Marker({ color: cfg.color, size: cfg.size ?? defaultMarkerSize, voxel: cfg.voxel });
       marker.object.layers.set(MARKER_LAYER); // drawn in the overlay pass, on top of the clouds
       this.planet.add(marker.object);
       marker.placeAt(cfg.lat, cfg.lon, this.radius);

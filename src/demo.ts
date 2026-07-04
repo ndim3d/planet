@@ -25,24 +25,33 @@ const MARKERS: MarkerConfig[] = [
 // Live config, seeded with the widget's own defaults. Flat here for simple binding; the
 // nested `material` / `lighting` groups are assembled in toOptions().
 const config = {
+  radius: 30,
   background: '#0b0f1a',
+  starfield: true,
   waterColor: '#2796e0',
   landColor: '#47b54b',
-  radius: 20,
   autoRotate: false,
   rotationSpeed: 0.3,
+  // terrain (voxel shape)
+  voxel: 1.0,
+  relief: 0.0,
+  ringStep: 0.05,
+  poleCap: 10,
+  // markers (pins)
+  markerVoxel: 0.16, // pin cube edge in world units (default ≈ size × 0.03)
   // clouds
   cloudsOn: true,
   cloudCount: 6,
   cloudSeed: 303,
   cloudSize: 0.9,
+  cloudVoxel: 1.56, // cloud cube edge length (world units) — default LAND_CUBE * 1.3
   cloudClearance: 0.45,
   cloudLag: 0.05,
   // material
   roughness: 0.4,
   metalness: 0,
   envMapIntensity: 0.9,
-  bevel: 0.12,
+  bevel: 0.10,
   colorJitter: 0.07,
   // lighting
   exposure: 1.0,
@@ -55,9 +64,22 @@ const config = {
   fillIntensity: 0.3,
 };
 
+// Markers, rebuilt only when the pin voxel changes so setOptions (which compares the array
+// by reference) treats an unrelated slider drag as a no-op for the pins.
+let markersCache: MarkerConfig[] = MARKERS;
+let markersCacheVoxel: number | undefined;
+function markers(): MarkerConfig[] {
+  if (config.markerVoxel !== markersCacheVoxel) {
+    markersCache = MARKERS.map((m) => ({ ...m, voxel: config.markerVoxel }));
+    markersCacheVoxel = config.markerVoxel;
+  }
+  return markersCache;
+}
+
 function toOptions(): PlanetWidgetOptions {
   return {
     background: config.background,
+    starfield: config.starfield,
     waterColor: config.waterColor,
     landColor: config.landColor,
     radius: config.radius,
@@ -68,11 +90,18 @@ function toOptions(): PlanetWidgetOptions {
           count: config.cloudCount,
           seed: config.cloudSeed,
           size: config.cloudSize,
+          voxel: config.cloudVoxel,
           clearance: config.cloudClearance,
           lag: config.cloudLag,
         }
       : false,
-    markers: MARKERS,
+    markers: markers(),
+    terrain: {
+      voxel: config.voxel,
+      relief: config.relief,
+      ringStep: config.ringStep,
+      poleCap: config.poleCap,
+    },
     material: {
       roughness: config.roughness,
       metalness: config.metalness,
@@ -200,6 +229,7 @@ if (stage && panel) {
   // --- Panel layout ---------------------------------------------------------
   const scene = section('Scene');
   color(scene, 'Background', 'background');
+  toggle(scene, 'Starfield', 'starfield');
   color(scene, 'Water', 'waterColor');
   color(scene, 'Land', 'landColor');
   range(scene, 'Radius', 'radius', 6, 40, 1);
@@ -212,6 +242,7 @@ if (stage && panel) {
   toggle(clouds, 'Enabled', 'cloudsOn');
   range(clouds, 'Count', 'cloudCount', 0, 20, 1);
   range(clouds, 'Base size', 'cloudSize', 0.3, 2.5, 0.05);
+  range(clouds, 'Voxel size', 'cloudVoxel', 0.6, 3, 0.1);
   range(clouds, 'Clearance', 'cloudClearance', 0, 3, 0.05);
   range(clouds, 'Lag (τ)', 'cloudLag', 0, 1, 0.01);
   const seedInput = range(clouds, 'Seed', 'cloudSeed', 1, 999, 1);
@@ -219,6 +250,15 @@ if (stage && panel) {
     seedInput.value = String(Math.floor(Math.random() * 999) + 1);
     seedInput.dispatchEvent(new Event('input')); // reuse the slider's handler (updates + rebuilds)
   });
+
+  const terrain = section('Terrain');
+  range(terrain, 'Voxel size', 'voxel', 0.6, 3, 0.1);
+  range(terrain, 'Land relief', 'relief', 0, 4, 0.5);
+  range(terrain, 'Ring step', 'ringStep', 0.25, 1, 0.05);
+  range(terrain, 'Pole cap°', 'poleCap', 0, 45, 1);
+
+  const markerSec = section('Markers');
+  range(markerSec, 'Voxel size', 'markerVoxel', 0.05, 0.5, 0.01);
 
   const mat = section('Material');
   range(mat, 'Roughness', 'roughness', 0, 1, 0.05);

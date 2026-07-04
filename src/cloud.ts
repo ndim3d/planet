@@ -33,7 +33,7 @@ const Z_SQUASH = 1.0;
 const Y_SQUASH = 1.9;
 
 // Cloud voxels are a bit larger than the land cubes (see reference).
-const VOXEL = LAND_CUBE * 1.3;
+const DEFAULT_CLOUD_VOXEL = LAND_CUBE * 1.3;
 
 const DEG2RAD = Math.PI / 180;
 
@@ -46,6 +46,12 @@ export interface BuildCloudsOptions {
   /** Base size multiplier applied to every cloud. Defaults to `1`. */
   size?: number;
   /**
+   * Edge length of one cloud cube, in world units — the cloud voxel resolution. Smaller
+   * cubes render each cloud with more, finer voxels; larger cubes make it chunkier.
+   * Defaults to `LAND_CUBE * 1.3` (a bit larger than the land cubes).
+   */
+  voxel?: number;
+  /**
    * Gap in world units between a cloud's lowest voxel and the sea-level shell. Small, so
    * the clouds hug the surface without ever dipping into the planet as they ride the
    * spin. Defaults to ~0.6 of a cloud voxel.
@@ -57,7 +63,8 @@ const CLOUD_DEFAULTS: Required<BuildCloudsOptions> = {
   count: 6,
   seed: 1,
   size: 1,
-  clearance: VOXEL * 0.6,
+  voxel: DEFAULT_CLOUD_VOXEL,
+  clearance: DEFAULT_CLOUD_VOXEL * 0.6,
 };
 
 interface Placement {
@@ -156,7 +163,9 @@ export function buildClouds(radius: number, options: BuildCloudsOptions = {}): I
   const count = options.count ?? CLOUD_DEFAULTS.count;
   const seed = options.seed ?? CLOUD_DEFAULTS.seed;
   const size = options.size ?? CLOUD_DEFAULTS.size;
-  const clearance = options.clearance ?? CLOUD_DEFAULTS.clearance;
+  const voxel = options.voxel ?? CLOUD_DEFAULTS.voxel;
+  // Default clearance tracks the (possibly retuned) voxel, not the constant default.
+  const clearance = options.clearance ?? voxel * 0.6;
   const placements = scatter(Math.max(0, Math.floor(count)), seed, size);
 
   const mats: Matrix4[] = [];
@@ -170,7 +179,7 @@ export function buildClouds(radius: number, options: BuildCloudsOptions = {}): I
 
   // Half a voxel of margin so it's the cube's inner *face*, not its centre, that must
   // clear the shell. The shell we keep clear of is sea level (`radius`).
-  const half = VOXEL * 0.5;
+  const half = voxel * 0.5;
   const surface = radius + clearance + half;
 
   for (const place of placements) {
@@ -216,9 +225,9 @@ export function buildClouds(radius: number, options: BuildCloudsOptions = {}): I
     // (lowest jv, near the axis) is what binds; tangential spread only pushes voxels out.
     let centreR = radius;
     for (const [i, k, j] of voxels) {
-      const iv = i * VOXEL;
-      const kv = k * VOXEL;
-      const jv = j * VOXEL;
+      const iv = i * voxel;
+      const kv = k * voxel;
+      const jv = j * voxel;
       const tang = iv * iv + kv * kv;
       const need = -jv + Math.sqrt(Math.max(0, surface * surface - tang));
       if (need > centreR) centreR = need;
@@ -229,15 +238,15 @@ export function buildClouds(radius: number, options: BuildCloudsOptions = {}): I
     m.makeBasis(east, north, normal); // cube axes: x→east, y→north, z→outward
     for (const [i, k, j] of voxels) {
       offset
-        .copy(east).multiplyScalar(mir * i * VOXEL)
-        .addScaledVector(north, k * VOXEL)
-        .addScaledVector(normal, centreR + j * VOXEL);
+        .copy(east).multiplyScalar(mir * i * voxel)
+        .addScaledVector(north, k * voxel)
+        .addScaledVector(normal, centreR + j * voxel);
       m.setPosition(offset);
       mats.push(new Matrix4().copy(m));
     }
   }
 
-  const geometry = new RoundedBoxGeometry(VOXEL, VOXEL, VOXEL, 2, VOXEL * 0.18);
+  const geometry = new RoundedBoxGeometry(voxel, voxel, voxel, 2, voxel * 0.18);
   const material = new MeshStandardMaterial({
     color: '#ffffff',
     roughness: 0.75,

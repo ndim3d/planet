@@ -11,6 +11,8 @@ export type {
   PlanetCloudOptions,
   PlanetLightingOptions,
   PlanetMaterialOptions,
+  PlanetTerrainOptions,
   PlanetWidgetOptions,
 } from './widget';
+export type { StarfieldOptions } from './starfield';
 export type { MarkerConfig, MarkerOptions } from './marker';
