@@ -169,7 +169,7 @@ export const DEFAULTS = {
     voxel: 1,
     relief: 0.5,
     ringStep: 0.75,
-    poleCap: 20,
+    poleCap: 10,
   },
   lighting: {
     exposure: 1.45,
@@ -177,7 +177,8 @@ export const DEFAULTS = {
     key: { color: '#ffffff', intensity: 1.9, position: [5, 8, 5] as [number, number, number] },
     fill: { color: '#dce6ff', intensity: 0.3, position: [-7, -3, 3] as [number, number, number] },
   },
-} satisfies Required<Omit<PlanetWidgetOptions, 'markers' | 'markerVoxelSize'>>;
+  markerVoxelSize: 0.32,
+} satisfies Required<Omit<PlanetWidgetOptions, 'markers'>>;
 
 const FOV = 45;
 
@@ -198,7 +199,7 @@ const POLE = new Vector3(0, 1, 0); // yaw axis — the planet's north–south ax
 const PITCH_AXIS = new Vector3(1, 0, 0); // tilt axis — OX
 const DRAG_SENSITIVITY = 0.005; // radians per pixel dragged
 const SPIN_DAMPING = 4; // yaw inertia decay after release; higher settles faster
-const MAX_TILT = 1.4; // clamp pitch (~80°) so the globe can't flip past a pole
+const MAX_TILT = 0.5; // clamp pitch (~28°) — allow only a gentle tilt around the equator view
 // Clouds trail the planet on a rubber band: rather than turning rigidly with it, they ease
 // toward its orientation each frame (first-order smoothing). The follow lag (time constant
 // in seconds) is per-instance (see `clouds.lag`); the fallback when unset is
@@ -382,8 +383,8 @@ export class PlanetWidget {
 
     // Drag spins the planet itself (the camera stays put); the markers ride along with the
     // surface and the clouds trail after it. The wheel dollies the camera to zoom.
-    this.minDistance = opts.radius * 1.4;
-    this.maxDistance = opts.radius * 6;
+    this.minDistance = opts.radius * 2.4;
+    this.maxDistance = opts.radius * 4.5;
     const el = this.renderer.domElement;
     el.style.touchAction = 'none';
     el.addEventListener('pointerdown', this.onPointerDown);
@@ -455,8 +456,8 @@ export class PlanetWidget {
       this.camera.far = this.radius * 10;
       this.camera.updateProjectionMatrix();
       this.positionKey(); // the shadow camera is fit to the globe, so it tracks the radius
-      this.minDistance = this.radius * 1.4;
-      this.maxDistance = this.radius * 6;
+      this.minDistance = this.radius * 2.4;
+      this.maxDistance = this.radius * 4.5;
       // Keep the current zoom within the new bounds.
       const dist = this.camera.position.length();
       this.camera.position.setLength(Math.min(this.maxDistance, Math.max(this.minDistance, dist)));

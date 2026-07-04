@@ -62,7 +62,7 @@ export interface BuildCloudsOptions {
 
 export const CLOUD_DEFAULTS: Required<BuildCloudsOptions> = {
   count: 6,
-  seed: 303,
+  seed: 613,
   size: 1.55,
   voxel: DEFAULT_CLOUD_VOXEL,
   clearance: 0,

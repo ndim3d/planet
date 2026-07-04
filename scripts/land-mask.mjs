@@ -1,11 +1,14 @@
 /**
  * Regenerate the equirectangular land mask in `src/land-mask.ts` from real
- * coastlines (Natural Earth 110m land — the "small scale", already-simplified
- * dataset, which suits a cartoon/plasticine globe better than the busier 50m).
+ * coastlines (Natural Earth 50m land — the "medium scale" dataset; its finer
+ * coastlines resolve peninsulas and seas — Italy, the Adriatic — that the 110m
+ * dataset smears away at this grid).
  *
- * The pipeline deliberately throws away detail finer than a voxel can show:
+ * The grid is deliberately finer than a base voxel: the planet renders coastal
+ * cells at half a voxel (a sub-voxel coastline, see planet.ts), so the mask must
+ * carry sub-voxel coastline detail for those half-cubes to key off.
  *
- *   1. Coarse COLS×ROWS grid (~3° cells) sized to the voxel resolution.
+ *   1. COLS×ROWS grid (~0.75° cells), finer than the ~1.9° base voxel.
  *   2. Each cell is supersampled (SUB×SUB points); it's land if the covered
  *      fraction ≥ COVERAGE_THRESHOLD — stable coastlines, no single-point specks.
  *   3. LAT_STRETCH is baked in here: the row for `planetLat` samples geography at
@@ -24,15 +27,15 @@
  */
 import { readFile } from 'node:fs/promises';
 
-const COLS = 120; // ~3.0° per cell in longitude — matched to the voxel resolution
-const ROWS = 60; //  ~3.0° per cell in latitude
+const COLS = 480; // 0.75° per cell in longitude — finer than a voxel, feeds the sub-voxel coast
+const ROWS = 240; //  0.75° per cell in latitude
 const SUB = 4; // supersample grid per cell (SUB×SUB points)
-const COVERAGE_THRESHOLD = 0.4; // cell is land if ≥ this fraction of points are land
-const MIN_ISLAND_CELLS = 2; // drop land blobs smaller than this many cells
-const LAT_STRETCH = 1.3; // continents pulled toward the equator (>1); baked in here
+const COVERAGE_THRESHOLD = 0.38; // cell is land if ≥ this fraction of points are land
+const MIN_ISLAND_CELLS = 4; // drop land blobs smaller than this many cells (keeps Sicily/Crete)
+const LAT_STRETCH = 1.15; // continents pulled toward the equator (>1); baked in here
 const ANTARCTICA_LAT = -60; // everything south of this is forced to water
 const SRC_URL =
-  'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_land.geojson';
+  'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_land.geojson';
 
 const args = process.argv.slice(2);
 const emitTs = args.includes('--ts');
