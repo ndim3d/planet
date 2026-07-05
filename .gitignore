@@ -1,5 +1,6 @@
 node_modules
-dist
+# dist/ is committed on purpose: it is the deliverable handed to the landing dev
+# (built on our side and pushed). Rebuild with `npm run build`.
 dist-demo
 *.local
 .DS_Store

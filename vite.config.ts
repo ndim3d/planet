@@ -1,6 +1,26 @@
+import { copyFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import dts from 'vite-plugin-dts';
+
+/**
+ * Copies the consumer-facing handoff files (usage doc + minimal example) into the
+ * library output after the bundle is written. They live in `handoff/` in the repo
+ * — not in `dist/` — because the library build runs with `emptyOutDir`, which would
+ * otherwise wipe them on every rebuild. This keeps the shipped `dist/` a complete,
+ * reproducible deliverable: code + types + docs + example in one folder.
+ */
+function copyHandoff(): Plugin {
+  const files = ['README.md', 'example.html'];
+  return {
+    name: 'copy-handoff',
+    closeBundle() {
+      for (const file of files) {
+        copyFileSync(resolve(__dirname, 'handoff', file), resolve(__dirname, 'dist', file));
+      }
+    },
+  };
+}
 
 /**
  * Two build targets, selected by `--mode`:
@@ -45,6 +65,7 @@ export default defineConfig(({ mode }) => {
         include: ['src'],
         exclude: ['src/demo.ts'],
       }),
+      copyHandoff(),
     ],
   };
 });

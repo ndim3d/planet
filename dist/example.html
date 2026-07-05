@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>planet-widget — example</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #0f1225; }
+      /* The widget fills its host, so the host needs a size. Here it fills the viewport. */
+      #planet { width: 100vw; height: 100vh; }
+    </style>
+  </head>
+  <body>
+    <div id="planet"></div>
+
+    <!--
+      Must be served over http(s), not opened as a file:// URL — browsers refuse to
+      load ES modules from the filesystem. From this folder, run e.g.:  npx serve
+      then open the printed URL and add /example.html
+    -->
+    <script type="module">
+      import { PlanetWidget } from './planet-widget.js';
+
+      const widget = new PlanetWidget(document.getElementById('planet'), {
+        // All optional — delete any line to fall back to its default.
+        background: '#0f1225',
+        starfield: true,
+        waterColor: '#4aa1fc',
+        landColor: '#90e13b',
+        radius: 30,
+        rotationSpeed: 0.1,
+        clouds: true,
+        markers: [
+          { lat: 51.5, lon: -0.13, label: 'London' },
+          { lat: 40.7, lon: -74.0, color: '#ffcc00', label: 'New York' },
+          { lat: 35.7, lon: 139.7, label: 'Tokyo' },
+        ],
+      });
+
+      // Free GPU resources when the widget's element is removed:
+      // widget.destroy();
+    </script>
+  </body>
+</html>
