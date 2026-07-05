@@ -200,6 +200,12 @@ const PITCH_AXIS = new Vector3(1, 0, 0); // tilt axis — OX
 const DRAG_SENSITIVITY = 0.005; // radians per pixel dragged
 const SPIN_DAMPING = 4; // yaw inertia decay after release; higher settles faster
 const MAX_TILT = 0.5; // clamp pitch (~28°) — allow only a gentle tilt around the equator view
+// Initial orientation: face Eurasia. `spin` yaws the ~75°E meridian onto the camera axis
+// (spin 0 faces the mid-Pacific at 90°W), and `tilt` lifts the northern hemisphere so the
+// view centres near 30°N,75°E — Europe→Siberia→China all on the near face. Derived to put
+// that geographic point on the camera axis; tilt kept within MAX_TILT so a first drag doesn't snap.
+const INITIAL_SPIN = -2.88;
+const INITIAL_TILT = 0.455;
 // Clouds trail the planet on a rubber band: rather than turning rigidly with it, they ease
 // toward its orientation each frame (first-order smoothing). The follow lag (time constant
 // in seconds) is per-instance (see `clouds.lag`); the fallback when unset is
@@ -287,8 +293,8 @@ export class PlanetWidget {
   private lastPointerX = 0;
   private lastPointerY = 0;
   private lastPointerTime = 0;
-  private spin = 0; // yaw about the pole (longitude), also driven by auto-rotation
-  private tilt = 0; // pitch about OX (clamped to ±MAX_TILT)
+  private spin = INITIAL_SPIN; // yaw about the pole (longitude), also driven by auto-rotation
+  private tilt = INITIAL_TILT; // pitch about OX (clamped to ±MAX_TILT)
   private spinVel = 0; // yaw inertia (rad/s) after release
 
   constructor(container: HTMLElement, options: PlanetWidgetOptions = {}) {
@@ -329,9 +335,8 @@ export class PlanetWidget {
     this.applyBackground();
 
     this.camera = new PerspectiveCamera(FOV, 1, 0.1, opts.radius * 10);
-    // Pull back far enough to fit the planet's radius in view, with margin.
-    const fitRadius = opts.radius + 2;
-    this.camera.position.set(0, 0, fitRadius / Math.sin((FOV / 2) * (Math.PI / 180)) * 1.05);
+    // Start at the farthest zoom the wheel allows (maxDistance = radius · 4.5, set below).
+    this.camera.position.set(0, 0, opts.radius * 4.5);
 
     this.renderer = new WebGLRenderer({ antialias: true, alpha: false });
     // Cap the device-pixel-ratio lower on phones/tablets. The scene is fragment-bound (a
@@ -400,6 +405,10 @@ export class PlanetWidget {
     // Build the planet (north pole +Y), its markers, and the trailing clouds from the state
     // above. The same helpers let setOptions rebuild just the affected mesh in place later.
     this.rebuildPlanet();
+    // Compose the starting orientation now, before the clouds are built, so the fresh cloud
+    // field copies the real initial orientation (Eurasia-facing) instead of identity — else it
+    // would visibly slerp to catch up on the first frames.
+    this.applyOrientation();
     this.rebuildMarkers();
     this.rebuildClouds();
 
@@ -753,6 +762,15 @@ export class PlanetWidget {
     this.dirty = true;
   };
 
+  // Compose the planet's orientation from the current spin (yaw about the pole) and tilt
+  // (pitch about OX) — no roll about Z. Shared by the constructor (so a freshly built cloud
+  // field can copy the true starting orientation) and the per-frame tick.
+  private applyOrientation(): void {
+    _qSpin.setFromAxisAngle(POLE, this.spin);
+    _qTilt.setFromAxisAngle(PITCH_AXIS, this.tilt);
+    this.planet.quaternion.copy(_qTilt).multiply(_qSpin);
+  }
+
   private tick = (now: number): void => {
     const delta = (now - this.lastTime) / 1000;
     this.lastTime = now;
@@ -776,9 +794,7 @@ export class PlanetWidget {
     }
 
     // Compose orientation: yaw about the pole, then tilt about OX — no roll about Z.
-    _qSpin.setFromAxisAngle(POLE, this.spin);
-    _qTilt.setFromAxisAngle(PITCH_AXIS, this.tilt);
-    this.planet.quaternion.copy(_qTilt).multiply(_qSpin);
+    this.applyOrientation();
 
     // Clouds trail the spin on a rubber band: ease their orientation toward the planet's.
     // The frame-rate-independent step 1 − e^(−Δt/τ) leaves a lag while the globe turns and

@@ -30,8 +30,9 @@ function mulberry32(seed: number): () => number {
 /**
  * Build a **static pixel-star** background as a {@link CanvasTexture}, ready to drop into
  * `scene.background`. Crisp white pixel stars (dots, four-point sparkles and short diagonal
- * streaks) each with a soft glow, scattered over the given base colour. Fully procedural —
- * no image asset — and deterministic for a given `seed`.
+ * streaks) each with a soft glow, scattered **evenly** (blue-noise, so no clumps or bald
+ * gaps) over the given base colour. Fully procedural — no image asset — and deterministic
+ * for a given `seed`.
  *
  * The texture uses nearest-neighbour magnification so the star pixels stay blocky. Dispose
  * it when you swap it out.
@@ -64,10 +65,30 @@ export function buildStarfield(background: string, options: StarfieldOptions = {
   };
   const block = (bx: number, by: number): void => ctx.fillRect(bx, by, px, px);
 
+  // Blue-noise scatter: reject a candidate that lands too close to an already-placed star, so
+  // the field spreads evenly instead of clumping into dense patches and bald gaps the way pure
+  // uniform random does. The separation floor scales with the field's density (roughly the
+  // even-grid spacing), and a rejected star falls back to its first candidate so a dense field
+  // still fits. Positions are laid out first, then drawn, but both stay deterministic in seed.
+  const margin = 3 * px;
+  const minSep2 = 0.6 * ((W * H) / count); // squared spacing floor between star centres
+  const stars: Array<{ x: number; y: number }> = [];
   for (let i = 0; i < count; i++) {
-    // Snap to the pixel grid so the blocks line up crisply.
-    const x = Math.round((rnd() * (W - 6 * px) + 3 * px) / px) * px;
-    const y = Math.round((rnd() * (H - 6 * px) + 3 * px) / px) * px;
+    let best: { x: number; y: number } | null = null;
+    for (let tries = 0; tries < 32; tries++) {
+      // Snap to the pixel grid so the blocks line up crisply.
+      const x = Math.round((rnd() * (W - 2 * margin) + margin) / px) * px;
+      const y = Math.round((rnd() * (H - 2 * margin) + margin) / px) * px;
+      if (!best) best = { x, y }; // fall back to the first candidate if none clears
+      if (stars.every((s) => (s.x - x) ** 2 + (s.y - y) ** 2 >= minSep2)) {
+        best = { x, y };
+        break;
+      }
+    }
+    stars.push(best as { x: number; y: number });
+  }
+
+  for (const { x, y } of stars) {
     const kind = rnd();
     const big = rnd() < 0.22; // a few brighter, larger sparkles
     const cx = x + px / 2;
