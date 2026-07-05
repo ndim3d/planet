@@ -142,10 +142,42 @@ if (stage && panel) {
   type StrKey = { [K in keyof typeof config]: (typeof config)[K] extends string ? K : never }[keyof typeof config];
   type BoolKey = { [K in keyof typeof config]: (typeof config)[K] extends boolean ? K : never }[keyof typeof config];
 
-  const section = (title: string): HTMLFieldSetElement => {
+  // One shared hint tooltip, mounted on <body> (not inside the panel) so #controls' overflow
+  // can't clip it; positioned in JS just below the hovered/focused "i" badge, flipped above
+  // when it would run off the bottom, and clamped horizontally to the viewport.
+  const tooltip = document.createElement('div');
+  tooltip.id = 'tooltip';
+  tooltip.setAttribute('role', 'tooltip');
+  document.body.appendChild(tooltip);
+  const showTip = (anchor: HTMLElement, text: string): void => {
+    tooltip.textContent = text;
+    tooltip.classList.add('show');
+    const a = anchor.getBoundingClientRect();
+    const t = tooltip.getBoundingClientRect();
+    const left = Math.max(8, Math.min(a.left + a.width / 2 - t.width / 2, window.innerWidth - t.width - 8));
+    let top = a.bottom + 6;
+    if (top + t.height > window.innerHeight - 8) top = a.top - t.height - 6; // flip above
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+  };
+  const hideTip = (): void => tooltip.classList.remove('show');
+  panel.addEventListener('scroll', hideTip); // a fixed tooltip would otherwise drift on scroll
+
+  const section = (title: string, hint: string): HTMLFieldSetElement => {
     const fs = document.createElement('fieldset');
     const legend = document.createElement('legend');
     legend.textContent = title;
+    // An "i" badge next to the title; hover/focus reveals the hint in the shared tooltip.
+    const info = document.createElement('span');
+    info.className = 'info';
+    info.textContent = 'i';
+    info.tabIndex = 0;
+    info.setAttribute('aria-label', hint);
+    info.addEventListener('mouseenter', () => showTip(info, hint));
+    info.addEventListener('mouseleave', hideTip);
+    info.addEventListener('focus', () => showTip(info, hint));
+    info.addEventListener('blur', hideTip);
+    legend.append(' ', info);
     fs.appendChild(legend);
     panel.appendChild(fs);
     return fs;
@@ -223,52 +255,54 @@ if (stage && panel) {
   };
 
   // --- Panel layout ---------------------------------------------------------
-  const scene = section('Scene');
-  color(scene, 'Background', 'background');
-  toggle(scene, 'Starfield', 'starfield');
-  color(scene, 'Water', 'waterColor');
-  color(scene, 'Land', 'landColor');
-  range(scene, 'Radius', 'radius', 6, 40, 1);
+  // Order for a designer: what they retune most (colours, material) sits at the top, then
+  // clouds, then the rest (lighting, shape, markers, motion).
+  const colors = section('Цвета', 'Основные цвета сцены — то, что дизайнер подгоняет в первую очередь: фон, звёзды, вода и суша.');
+  color(colors, 'Фон', 'background');
+  toggle(colors, 'Звёзды', 'starfield');
+  color(colors, 'Вода', 'waterColor');
+  color(colors, 'Суша', 'landColor');
 
-  const motion = section('Motion');
-  toggle(motion, 'Auto-rotate', 'autoRotate');
-  range(motion, 'Speed', 'rotationSpeed', 0, 1, 0.05);
+  const mat = section('Материал', 'Как поверхность реагирует на свет: матовость, металличность, скругление кубиков и разброс их яркости.');
+  range(mat, 'Шероховатость', 'roughness', 0, 1, 0.05);
+  range(mat, 'Металличность', 'metalness', 0, 1, 0.05);
+  range(mat, 'Фаска', 'bevel', 0, 0.5, 0.01);
+  range(mat, 'Разброс цвета', 'colorJitter', 0, 0.3, 0.01);
 
-  const clouds = section('Clouds');
-  toggle(clouds, 'Enabled', 'cloudsOn');
-  range(clouds, 'Count', 'cloudCount', 0, 20, 1);
-  range(clouds, 'Base size', 'cloudSize', 0.3, 2.5, 0.05);
-  range(clouds, 'Voxel size', 'cloudVoxel', 0.6, 3, 0.1);
-  range(clouds, 'Clearance', 'cloudClearance', 0, 3, 0.05);
-  range(clouds, 'Lag (τ)', 'cloudLag', 0, 1, 0.01);
-  const seedInput = range(clouds, 'Seed', 'cloudSeed', 1, 999, 1);
-  button(clouds, '🎲 Reseed', () => {
+  const clouds = section('Облака', 'Облачный слой над планетой: количество, размер, зазор до поверхности и инерция следования за вращением.');
+  toggle(clouds, 'Показывать', 'cloudsOn');
+  range(clouds, 'Количество', 'cloudCount', 0, 20, 1);
+  range(clouds, 'Базовый размер', 'cloudSize', 0.3, 2.5, 0.05);
+  range(clouds, 'Размер вокселя', 'cloudVoxel', 0.6, 3, 0.1);
+  range(clouds, 'Зазор', 'cloudClearance', 0, 3, 0.05);
+  range(clouds, 'Инерция (τ)', 'cloudLag', 0, 1, 0.01);
+  const seedInput = range(clouds, 'Сид', 'cloudSeed', 1, 999, 1);
+  button(clouds, '🎲 Пересоздать', () => {
     seedInput.value = String(Math.floor(Math.random() * 999) + 1);
     seedInput.dispatchEvent(new Event('input')); // reuse the slider's handler (updates + rebuilds)
   });
 
-  const terrain = section('Terrain');
-  range(terrain, 'Voxel size', 'voxel', 0.6, 3, 0.1);
-  range(terrain, 'Land relief', 'relief', 0, 4, 0.5);
-  range(terrain, 'Ring step', 'ringStep', 0.25, 1, 0.05);
-  range(terrain, 'Pole cap°', 'poleCap', 0, 45, 1);
+  const light = section('Освещение', 'Экспозиция тонмаппинга и цвета/интенсивности источников света: полусфера, ключевой и заливка.');
+  range(light, 'Экспозиция', 'exposure', 0, 2, 0.05);
+  color(light, 'Небо', 'skyColor');
+  color(light, 'Земля', 'groundColor');
+  range(light, 'Полусфера', 'hemiIntensity', 0, 2, 0.05);
+  color(light, 'Ключевой', 'keyColor');
+  range(light, 'Ключевой, инт.', 'keyIntensity', 0, 2, 0.05);
+  color(light, 'Заливка', 'fillColor');
+  range(light, 'Заливка, инт.', 'fillIntensity', 0, 2, 0.05);
 
-  const markerSec = section('Markers');
-  range(markerSec, 'Voxel size', 'markerVoxelSize', 0.05, 0.5, 0.01);
+  const terrain = section('Форма планеты', 'Геометрия глобуса: радиус, размер вокселя, высота рельефа суши, шаг колец и размер полярной шапки.');
+  range(terrain, 'Радиус', 'radius', 6, 40, 1);
+  range(terrain, 'Размер вокселя', 'voxel', 0.6, 3, 0.1);
+  range(terrain, 'Рельеф суши', 'relief', 0, 4, 0.5);
+  range(terrain, 'Шаг колец', 'ringStep', 0.25, 1, 0.05);
+  range(terrain, 'Полярная шапка°', 'poleCap', 0, 45, 1);
 
-  const mat = section('Material');
-  range(mat, 'Roughness', 'roughness', 0, 1, 0.05);
-  range(mat, 'Metalness', 'metalness', 0, 1, 0.05);
-  range(mat, 'Bevel', 'bevel', 0, 0.5, 0.01);
-  range(mat, 'Color jitter', 'colorJitter', 0, 0.3, 0.01);
+  const markerSec = section('Маркеры', 'Булавки-метки на поверхности планеты — их размер в вокселях.');
+  range(markerSec, 'Размер вокселя', 'markerVoxelSize', 0.05, 0.5, 0.01);
 
-  const light = section('Lighting');
-  range(light, 'Exposure', 'exposure', 0, 2, 0.05);
-  color(light, 'Sky', 'skyColor');
-  color(light, 'Ground', 'groundColor');
-  range(light, 'Hemi', 'hemiIntensity', 0, 2, 0.05);
-  color(light, 'Key', 'keyColor');
-  range(light, 'Key int', 'keyIntensity', 0, 2, 0.05);
-  color(light, 'Fill', 'fillColor');
-  range(light, 'Fill int', 'fillIntensity', 0, 2, 0.05);
+  const motion = section('Движение', 'Автоматическое медленное вращение планеты, когда её не крутят вручную.');
+  toggle(motion, 'Автоповорот', 'autoRotate');
+  range(motion, 'Скорость', 'rotationSpeed', 0, 1, 0.05);
 }

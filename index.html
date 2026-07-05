@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="ru">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Planet widget — demo</title>
+    <title>Planet widget — демо</title>
     <style>
       :root {
         color-scheme: dark;
@@ -59,8 +59,10 @@
       /* Control panel, generated in demo.ts. */
       #controls {
         flex: 0 0 260px;
+        box-sizing: border-box;
         max-height: min(80vmin, 560px);
         overflow-y: auto;
+        overflow-x: hidden; /* никакого горизонтального скролла — длинные подписи переносятся */
         padding: 0.25rem 0.75rem 0.75rem;
         border: 1px solid #1c2436;
         border-radius: 12px;
@@ -81,25 +83,57 @@
         letter-spacing: 0.04em;
         font-size: 0.68rem;
       }
+      /* Little "i" badge next to a section title; its native `title` is the tooltip hint.
+         (A CSS bubble would be clipped by the panel's overflow: auto — the browser tooltip isn't.) */
+      #controls legend .info {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 0.95rem;
+        height: 0.95rem;
+        margin-left: 0.35rem;
+        border: 1px solid #2b3854;
+        border-radius: 50%;
+        font-size: 0.58rem;
+        font-style: italic;
+        font-weight: 700;
+        text-transform: none;
+        letter-spacing: 0;
+        color: #7e8aa0;
+        cursor: help;
+        vertical-align: middle;
+        user-select: none;
+      }
+      #controls legend .info:hover,
+      #controls legend .info:focus {
+        color: #e6ecf6;
+        border-color: #46567a;
+        background: #131a2a;
+        outline: none;
+      }
       #controls .row {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 0.5rem;
         margin: 0.35rem 0;
+        min-width: 0; /* let the flex children shrink instead of forcing the row wider */
       }
       #controls .row label {
         flex: 1 1 auto;
+        min-width: 0; /* allow the label to shrink below its text and wrap */
+        overflow-wrap: anywhere;
         color: #aab4c6;
       }
       #controls .row .val {
-        flex: 0 0 2.6rem;
+        flex: 0 0 2.2rem;
         text-align: right;
         color: #6b7689;
         font-variant-numeric: tabular-nums;
       }
       #controls input[type='range'] {
-        flex: 0 0 6.5rem;
+        flex: 0 0 5rem;
+        min-width: 0;
       }
       #controls input[type='color'] {
         flex: 0 0 1.75rem;
@@ -124,16 +158,40 @@
       #controls button:hover {
         background: #1a2338;
       }
+      /* Shared section-hint tooltip. Lives on <body> (not inside #controls) so the panel's
+         overflow never clips it; positioned in JS relative to the hovered "i" badge. */
+      #tooltip {
+        position: fixed;
+        left: 0;
+        top: 0;
+        z-index: 100;
+        max-width: 220px;
+        padding: 0.45rem 0.6rem;
+        border: 1px solid #2b3854;
+        border-radius: 6px;
+        background: #121a2b;
+        color: #dbe3f0;
+        font-family: system-ui, -apple-system, sans-serif;
+        font-size: 0.72rem;
+        line-height: 1.35;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.12s ease;
+      }
+      #tooltip.show {
+        opacity: 1;
+      }
     </style>
   </head>
   <body>
     <header>
       <h1>planet-widget</h1>
-      <p>Demo — a lit sphere mounted into an HTML element</p>
+      <p>Демо — освещённая воксельная планета, встроенная в HTML-элемент</p>
     </header>
     <main id="app">
       <div id="stage"></div>
-      <aside id="controls" aria-label="Widget controls"></aside>
+      <aside id="controls" aria-label="Контролы виджета"></aside>
     </main>
     <script type="module" src="/src/demo.ts"></script>
   </body>
