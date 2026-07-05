@@ -11301,6 +11301,8 @@ var Mc = class {
 	markers = [];
 	clouds;
 	resizeObserver;
+	pixelRatioCap;
+	dprMediaQuery;
 	minDistance;
 	maxDistance;
 	hemi;
@@ -11369,7 +11371,7 @@ var Mc = class {
 			alpha: !1
 		});
 		let c = typeof matchMedia == "function" && matchMedia("(hover: none) and (pointer: coarse)").matches;
-		this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, c ? 1.5 : 2)), this.renderer.toneMapping = 7, this.renderer.toneMappingExposure = a.exposure, this.renderer.shadowMap.enabled = !0, this.renderer.shadowMap.type = 3, this.renderer.shadowMap.autoUpdate = !1, this.renderer.domElement.style.display = "block", this.renderer.domElement.style.width = "100%", this.renderer.domElement.style.height = "100%", e.appendChild(this.renderer.domElement), this.hemi = new Lr(a.hemisphere.skyColor, a.hemisphere.groundColor, a.hemisphere.intensity), this.key = new Qr(a.key.color, a.key.intensity), this.key.castShadow = !0, this.key.shadow.mapSize.set(2048, 2048), this.key.shadow.bias = -2e-4, this.key.shadow.normalBias = .1, this.key.shadow.radius = 3.5, this.key.shadow.blurSamples = 10, this.fill = new Qr(a.fill.color, a.fill.intensity), this.fill.position.set(...a.fill.position), this.positionKey(), this.scene.add(this.hemi, this.key, this.fill);
+		this.pixelRatioCap = c ? 1.5 : 2, this.applyPixelRatio(), this.renderer.toneMapping = 7, this.renderer.toneMappingExposure = a.exposure, this.renderer.shadowMap.enabled = !0, this.renderer.shadowMap.type = 3, this.renderer.shadowMap.autoUpdate = !1, this.renderer.domElement.style.display = "block", this.renderer.domElement.style.width = "100%", this.renderer.domElement.style.height = "100%", e.appendChild(this.renderer.domElement), this.hemi = new Lr(a.hemisphere.skyColor, a.hemisphere.groundColor, a.hemisphere.intensity), this.key = new Qr(a.key.color, a.key.intensity), this.key.castShadow = !0, this.key.shadow.mapSize.set(2048, 2048), this.key.shadow.bias = -2e-4, this.key.shadow.normalBias = .1, this.key.shadow.radius = 3.5, this.key.shadow.blurSamples = 10, this.fill = new Qr(a.fill.color, a.fill.intensity), this.fill.position.set(...a.fill.position), this.positionKey(), this.scene.add(this.hemi, this.key, this.fill);
 		for (let e of [
 			this.hemi,
 			this.key,
@@ -11377,14 +11379,14 @@ var Mc = class {
 		]) e.layers.enable(Ic);
 		this.rebuildPlanet(), this.applyOrientation(), this.rebuildMarkers(), this.rebuildClouds(), this.minDistance = n.radius * 2.4, this.maxDistance = n.radius * 4.5;
 		let l = this.renderer.domElement;
-		l.style.touchAction = "none", l.addEventListener("pointerdown", this.onPointerDown), l.addEventListener("pointermove", this.onPointerMove), l.addEventListener("pointerup", this.onPointerUp), l.addEventListener("pointercancel", this.onPointerUp), l.addEventListener("wheel", this.onWheel, { passive: !1 }), this.lastInteractionEnd = performance.now(), this.resize(), this.resizeObserver = new ResizeObserver(this.resize), this.resizeObserver.observe(e), this.lastTime = performance.now(), this.frameId = requestAnimationFrame(this.tick);
+		l.style.touchAction = "none", l.addEventListener("pointerdown", this.onPointerDown), l.addEventListener("pointermove", this.onPointerMove), l.addEventListener("pointerup", this.onPointerUp), l.addEventListener("pointercancel", this.onPointerUp), l.addEventListener("wheel", this.onWheel, { passive: !1 }), this.lastInteractionEnd = performance.now(), this.resize(), this.resizeObserver = new ResizeObserver(this.resize), this.resizeObserver.observe(e), this.watchDevicePixelRatio(), this.lastTime = performance.now(), this.frameId = requestAnimationFrame(this.tick);
 	}
 	get domElement() {
 		return this.renderer.domElement;
 	}
 	destroy() {
 		if (this.destroyed) return;
-		this.destroyed = !0, cancelAnimationFrame(this.frameId), this.resizeObserver.disconnect();
+		this.destroyed = !0, cancelAnimationFrame(this.frameId), this.resizeObserver.disconnect(), this.dprMediaQuery?.removeEventListener("change", this.onDevicePixelRatioChange);
 		let e = this.renderer.domElement;
 		e.removeEventListener("pointerdown", this.onPointerDown), e.removeEventListener("pointermove", this.onPointerMove), e.removeEventListener("pointerup", this.onPointerUp), e.removeEventListener("pointercancel", this.onPointerUp), e.removeEventListener("wheel", this.onWheel), e.remove();
 		for (let e of this.markers) e.dispose();
@@ -11469,7 +11471,16 @@ var Mc = class {
 	}
 	resize = () => {
 		let e = this.container.clientWidth || 1, t = this.container.clientHeight || 1;
-		this.renderer.setSize(e, t, !1), this.camera.aspect = e / t, this.camera.updateProjectionMatrix(), this.dirty = !0;
+		this.applyPixelRatio(), this.renderer.setSize(e, t, !1), this.camera.aspect = e / t, this.camera.updateProjectionMatrix(), this.dirty = !0;
+	};
+	applyPixelRatio() {
+		this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.pixelRatioCap));
+	}
+	watchDevicePixelRatio() {
+		typeof matchMedia == "function" && (this.dprMediaQuery?.removeEventListener("change", this.onDevicePixelRatioChange), this.dprMediaQuery = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`), this.dprMediaQuery.addEventListener("change", this.onDevicePixelRatioChange));
+	}
+	onDevicePixelRatioChange = () => {
+		this.resize(), this.watchDevicePixelRatio();
 	};
 	onPointerDown = (e) => {
 		this.activePointer === null && (this.activePointer = e.pointerId, this.dragging = !0, this.interacting = !0, this.lastPointerX = e.clientX, this.lastPointerY = e.clientY, this.lastPointerTime = performance.now(), this.spinVel = 0, this.dirty = !0, this.renderer.domElement.setPointerCapture(e.pointerId));

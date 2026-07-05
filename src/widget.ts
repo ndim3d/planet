@@ -245,6 +245,13 @@ export class PlanetWidget {
   // planet's each frame so they trail its spin on a rubber band (see cloudLag).
   private clouds?: InstancedMesh;
   private readonly resizeObserver: ResizeObserver;
+  // Upper bound on device-pixel-ratio (2 desktop / 1.5 touch, see constructor). The actual
+  // ratio is min(window.devicePixelRatio, cap) and is re-applied on every resize / DPR change.
+  private readonly pixelRatioCap: number;
+  // Fires when devicePixelRatio leaves its current value (monitor move, browser zoom) — a
+  // change a container ResizeObserver can miss, since the CSS box size need not change. Re-armed
+  // after each change because the query only matches one exact ratio.
+  private dprMediaQuery?: MediaQueryList;
   private minDistance: number;
   private maxDistance: number;
 
@@ -347,7 +354,8 @@ export class PlanetWidget {
     // but false on a laptop with a trackpad (even a touchscreen one), so desktops keep DPR 2.
     const coarsePointer =
       typeof matchMedia === 'function' && matchMedia('(hover: none) and (pointer: coarse)').matches;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarsePointer ? 1.5 : 2));
+    this.pixelRatioCap = coarsePointer ? 1.5 : 2;
+    this.applyPixelRatio();
     // Khronos PBR-Neutral tone mapping: rolls off blown highlights without the strong
     // desaturation/whitening that ACES gives, so the greens and blues stay vivid
     // instead of washing out toward the lit pole. Exposure kept just under 1 so the
@@ -429,6 +437,7 @@ export class PlanetWidget {
     this.resize();
     this.resizeObserver = new ResizeObserver(this.resize);
     this.resizeObserver.observe(container);
+    this.watchDevicePixelRatio();
 
     this.lastTime = performance.now();
     this.frameId = requestAnimationFrame(this.tick);
@@ -445,6 +454,7 @@ export class PlanetWidget {
     this.destroyed = true;
     cancelAnimationFrame(this.frameId);
     this.resizeObserver.disconnect();
+    this.dprMediaQuery?.removeEventListener('change', this.onDevicePixelRatioChange);
     const el = this.renderer.domElement;
     el.removeEventListener('pointerdown', this.onPointerDown);
     el.removeEventListener('pointermove', this.onPointerMove);
@@ -708,10 +718,35 @@ export class PlanetWidget {
   private resize = (): void => {
     const width = this.container.clientWidth || 1;
     const height = this.container.clientHeight || 1;
+    // Re-apply the ratio first: it may have changed since construction (moved to a
+    // different-DPI monitor, browser zoom), and setSize derives the drawing buffer from it.
+    this.applyPixelRatio();
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.dirty = true;
+  };
+
+  /** Set the drawing-buffer ratio to the live devicePixelRatio, capped (see pixelRatioCap). */
+  private applyPixelRatio(): void {
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.pixelRatioCap));
+  }
+
+  /**
+   * Re-render at the new devicePixelRatio when it changes, then re-arm — a `resolution`
+   * media query matches only one exact ratio, so it must be recreated after each hit.
+   * Covers browser zoom / monitor moves that a container-only ResizeObserver can miss.
+   */
+  private watchDevicePixelRatio(): void {
+    if (typeof matchMedia !== 'function') return;
+    this.dprMediaQuery?.removeEventListener('change', this.onDevicePixelRatioChange);
+    this.dprMediaQuery = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    this.dprMediaQuery.addEventListener('change', this.onDevicePixelRatioChange);
+  }
+
+  private onDevicePixelRatioChange = (): void => {
+    this.resize(); // re-applies the pixel ratio and drawing-buffer size
+    this.watchDevicePixelRatio(); // re-arm for the ratio we just moved to
   };
 
   private onPointerDown = (e: PointerEvent): void => {

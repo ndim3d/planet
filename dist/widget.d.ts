@@ -201,6 +201,8 @@ export declare class PlanetWidget {
     private markers;
     private clouds?;
     private readonly resizeObserver;
+    private readonly pixelRatioCap;
+    private dprMediaQuery?;
     private minDistance;
     private maxDistance;
     private readonly hemi;
@@ -259,6 +261,15 @@ export declare class PlanetWidget {
     private positionKey;
     private applyLiveMaterial;
     private resize;
+    /** Set the drawing-buffer ratio to the live devicePixelRatio, capped (see pixelRatioCap). */
+    private applyPixelRatio;
+    /**
+     * Re-render at the new devicePixelRatio when it changes, then re-arm — a `resolution`
+     * media query matches only one exact ratio, so it must be recreated after each hit.
+     * Covers browser zoom / monitor moves that a container-only ResizeObserver can miss.
+     */
+    private watchDevicePixelRatio;
+    private onDevicePixelRatioChange;
     private onPointerDown;
     private onPointerMove;
     private onPointerUp;
