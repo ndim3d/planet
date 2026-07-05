@@ -163,7 +163,7 @@ export class Marker {
     // is on, so the pin's own thickness self-occludes solidly and it sits in the scene
     // depth properly; the outward tilt keeps the body clear of the globe at every
     // latitude, and a high renderOrder draws it after the globe.
-    const geometry = new RoundedBoxGeometry(voxel, voxel, voxel, 2, voxel * 0.18);
+    const geometry = new RoundedBoxGeometry(voxel, voxel, voxel, 1, voxel * 0.18);
     this.material = new MeshStandardMaterial({
       color,
       roughness: 0.5,

@@ -302,7 +302,7 @@ export function buildClouds(radius: number, options: BuildCloudsOptions = {}): I
     }
   }
 
-  const geometry = new RoundedBoxGeometry(voxel, voxel, voxel, 2, voxel * 0.18);
+  const geometry = new RoundedBoxGeometry(voxel, voxel, voxel, 1, voxel * 0.18);
   const material = new MeshStandardMaterial({
     color: '#ffffff',
     roughness: 0.75,

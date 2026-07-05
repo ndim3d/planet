@@ -207,6 +207,9 @@ const MAX_TILT = 0.5; // clamp pitch (~28°) — allow only a gentle tilt around
 // makes them turn rigidly.
 const _qSpin = new Quaternion();
 const _qTilt = new Quaternion();
+// Angular gap (radians) below which the trailing clouds are snapped onto the planet and the
+// rubber-band follow is declared settled — so an idle, aligned scene stops re-rendering.
+const CLOUD_SETTLE_EPS = 1e-3;
 
 /**
  * A voxel Earth-like planet rendered with Three.js, mounted into an HTML element.
@@ -267,6 +270,14 @@ export class PlanetWidget {
   private frameId = 0;
   private lastTime = 0;
   private destroyed = false;
+  // On-demand rendering: the rAF loop keeps ticking (for input latency), but a frame is only
+  // drawn — and the shadow map only rebuilt — when `dirty`. Every mutation point (drag, zoom,
+  // inertia, auto-rotate, cloud settling, and the rebuild/apply helpers) sets it; a static,
+  // settled scene then issues no draw calls, so the phone stays cool and doesn't throttle.
+  private dirty = true;
+  // Whether the trailing clouds are still easing toward the planet's orientation. False once
+  // they've caught up (see CLOUD_SETTLE_EPS), so a settled scene stops the per-frame slerp.
+  private cloudsSettling = true;
   // Auto-rotation pauses while the user interacts and for IDLE_RESUME_MS after.
   private interacting = false;
   private lastInteractionEnd = 0;
@@ -323,7 +334,15 @@ export class PlanetWidget {
     this.camera.position.set(0, 0, fitRadius / Math.sin((FOV / 2) * (Math.PI / 180)) * 1.05);
 
     this.renderer = new WebGLRenderer({ antialias: true, alpha: false });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Cap the device-pixel-ratio lower on phones/tablets. The scene is fragment-bound (a
+    // full-screen PBR fill per pixel, plus MSAA), and a retina phone at DPR 2 shades ~4× the
+    // pixels of DPR 1 — the single biggest cost on mobile. Capping touch devices to 1.5
+    // (vs 2 on desktop) cuts fragment work ~44% for a sharpness drop that is barely visible
+    // on a dense phone screen. `(hover: none) and (pointer: coarse)` is true on phones/tablets
+    // but false on a laptop with a trackpad (even a touchscreen one), so desktops keep DPR 2.
+    const coarsePointer =
+      typeof matchMedia === 'function' && matchMedia('(hover: none) and (pointer: coarse)').matches;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarsePointer ? 1.5 : 2));
     // Khronos PBR-Neutral tone mapping: rolls off blown highlights without the strong
     // desaturation/whitening that ACES gives, so the greens and blues stay vivid
     // instead of washing out toward the lit pole. Exposure kept just under 1 so the
@@ -367,7 +386,10 @@ export class PlanetWidget {
     // VSM Gaussian blur: `radius` is the blur width in texels, `blurSamples` its quality — the
     // penumbra that turns the hard voxel-sharp edges soft.
     this.key.shadow.radius = 3.5;
-    this.key.shadow.blurSamples = 25;
+    // Blur-sample count is the quality of the VSM Gaussian, not the penumbra width (that's
+    // `radius`). 10 taps are enough to keep the soft edge smooth; the former 25 were 2.5× the
+    // per-frame blur cost for no visible gain — a pure win on a fill-bound mobile GPU.
+    this.key.shadow.blurSamples = 10;
     this.fill = new DirectionalLight(lighting.fill.color, lighting.fill.intensity);
     this.fill.position.set(...lighting.fill.position);
     this.positionKey();
@@ -449,7 +471,7 @@ export class PlanetWidget {
     }
     if (backgroundDirty) this.applyBackground();
     if (next.rotationSpeed !== undefined) this.rotationSpeed = next.rotationSpeed;
-    if (next.autoRotate !== undefined) this.autoRotate = next.autoRotate;
+    if (next.autoRotate !== undefined) { this.autoRotate = next.autoRotate; this.dirty = true; }
 
     if (next.radius !== undefined && next.radius !== this.radius) {
       this.radius = next.radius;
@@ -562,6 +584,7 @@ export class PlanetWidget {
     } else {
       this.scene.background = this.background;
     }
+    this.dirty = true;
   }
 
   private disposeMesh(mesh: InstancedMesh): void {
@@ -589,6 +612,7 @@ export class PlanetWidget {
     this.planet.castShadow = true;
     this.planet.receiveShadow = true;
     this.scene.add(this.planet);
+    this.dirty = true;
   }
 
   // Re-create the markers from markerConfigs and parent them to the current planet.
@@ -605,6 +629,7 @@ export class PlanetWidget {
       marker.placeAt(cfg.lat, cfg.lon, this.radius);
       return marker;
     });
+    this.dirty = true;
   }
 
   // Rebuild the cloud field from cloudGen (or remove it when disabled). The new mesh
@@ -623,7 +648,9 @@ export class PlanetWidget {
       this.clouds.castShadow = true;
       this.clouds.quaternion.copy(prevQuat ?? this.planet.quaternion);
       this.scene.add(this.clouds);
+      this.cloudsSettling = true; // ease the fresh field onto the planet's current orientation
     }
+    this.dirty = true;
   }
 
   private applyLighting(): void {
@@ -637,6 +664,7 @@ export class PlanetWidget {
     this.fill.color.set(this.lighting.fill.color);
     this.fill.intensity = this.lighting.fill.intensity;
     this.fill.position.set(...this.lighting.fill.position);
+    this.dirty = true;
   }
 
   // Place the key light from its configured position, treated as a *direction*: for a
@@ -665,6 +693,7 @@ export class PlanetWidget {
     const mat = this.planet.material as MeshStandardMaterial;
     mat.roughness = this.material.roughness;
     mat.metalness = this.material.metalness;
+    this.dirty = true;
   }
 
   private resize = (): void => {
@@ -673,6 +702,7 @@ export class PlanetWidget {
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    this.dirty = true;
   };
 
   private onPointerDown = (e: PointerEvent): void => {
@@ -684,6 +714,7 @@ export class PlanetWidget {
     this.lastPointerY = e.clientY;
     this.lastPointerTime = performance.now();
     this.spinVel = 0;
+    this.dirty = true;
     this.renderer.domElement.setPointerCapture(e.pointerId);
   };
 
@@ -699,6 +730,8 @@ export class PlanetWidget {
     this.spin += dYaw;
     this.tilt = Math.max(-MAX_TILT, Math.min(MAX_TILT, this.tilt + dPitch));
     this.spinVel = dYaw / dt; // carried into inertia on release
+    this.dirty = true;
+    this.cloudsSettling = true; // orientation moved → clouds must chase it again
   };
 
   private onPointerUp = (e: PointerEvent): void => {
@@ -717,6 +750,7 @@ export class PlanetWidget {
     const dist = this.camera.position.length() * Math.exp(e.deltaY * 0.001);
     this.camera.position.setLength(Math.min(this.maxDistance, Math.max(this.minDistance, dist)));
     this.lastInteractionEnd = performance.now();
+    this.dirty = true;
   };
 
   private tick = (now: number): void => {
@@ -728,12 +762,18 @@ export class PlanetWidget {
       this.spin += this.spinVel * delta;
       this.spinVel *= Math.exp(-SPIN_DAMPING * delta);
       if (Math.abs(this.spinVel) < 1e-3) this.spinVel = 0;
+      this.dirty = true;
+      this.cloudsSettling = true;
     }
 
     // Auto-rotate (yaw about the pole) once idle past the resume delay and inertia settled.
     const idle =
       !this.interacting && this.spinVel === 0 && now - this.lastInteractionEnd >= IDLE_RESUME_MS;
-    if (this.autoRotate && idle) this.spin += this.rotationSpeed * delta;
+    if (this.autoRotate && idle) {
+      this.spin += this.rotationSpeed * delta;
+      this.dirty = true;
+      this.cloudsSettling = true;
+    }
 
     // Compose orientation: yaw about the pole, then tilt about OX — no roll about Z.
     _qSpin.setFromAxisAngle(POLE, this.spin);
@@ -742,14 +782,29 @@ export class PlanetWidget {
 
     // Clouds trail the spin on a rubber band: ease their orientation toward the planet's.
     // The frame-rate-independent step 1 − e^(−Δt/τ) leaves a lag while the globe turns and
-    // eases the clouds into alignment once it stops.
-    if (this.clouds) {
+    // eases the clouds into alignment once it stops. Once they've all but caught up, snap
+    // them exactly onto the planet and stop the follow, so a settled scene stops re-rendering
+    // instead of chasing an ever-shrinking residual forever.
+    if (this.clouds && this.cloudsSettling) {
       this.clouds.quaternion.slerp(this.planet.quaternion, 1 - Math.exp(-delta / this.cloudLag));
+      if (this.clouds.quaternion.angleTo(this.planet.quaternion) < CLOUD_SETTLE_EPS) {
+        this.clouds.quaternion.copy(this.planet.quaternion);
+        this.cloudsSettling = false;
+      } else {
+        this.dirty = true;
+      }
     }
 
-    // Fade/hide each marker as the spin carries it behind the globe.
-    for (const marker of this.markers) marker.update(this.camera.position, this.planet);
-    this.render();
+    // On-demand rendering: only redraw — and rebuild the shadow map (see render) — when
+    // something actually changed this frame. A static, settled scene skips the draw entirely,
+    // keeping the GPU idle so the phone stays cool and doesn't thermally throttle. The last
+    // moving frame already leaves the final state on screen, so nothing is dropped.
+    if (this.dirty) {
+      // Fade/hide each marker as the spin carries it behind the globe.
+      for (const marker of this.markers) marker.update(this.camera.position, this.planet);
+      this.render();
+      this.dirty = false;
+    }
     this.frameId = requestAnimationFrame(this.tick);
   };
 

@@ -16,7 +16,7 @@
     }
   },
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --host",
     "build": "vite build",
     "build:demo": "vite build --mode demo",
     "preview:demo": "vite preview --outDir dist-demo",

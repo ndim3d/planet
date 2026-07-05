@@ -196,19 +196,31 @@ export function buildPlanet(opts: PlanetBuildOptions): InstancedMesh {
     );
   };
 
+  // Fast ring-sample coordinates. On a ring the outward point is (cos·r, y, −sin·r), so
+  // `landAtDir`'s hypot+asin+atan2 collapse to closed forms: longitude is the ring angle
+  // itself wrapped to (−180, 180] (matching atan2(−pz, px)), and latitude is atan2(y, r)
+  // (= asin(y/√(r²+y²))) — which is *constant along a ring*, so it is computed once per ring
+  // and reused for every cube instead of per-sample trig. Exact, just cheaper.
+  const RAD2DEG = 57.29577951308232;
+  const lonOf = (angle: number): number => {
+    let lon = (angle * RAD2DEG) % 360;
+    if (lon > 180) lon -= 360;
+    return lon;
+  };
+
   // Emit one angular slot of the visible wall. A cell that is all land or all water is one
   // full cube; a cell the coastline crosses is split into four half-cubes (2×2 over its
   // longitude × height footprint), each land/water by its own sample — the sub-voxel
   // coastline that resolves peninsulas (Italy) below the base cube size, like the reference.
-  const emitCell = (r: number, y: number, th: number, dTheta: number, arc: number): void => {
+  // `latTop`/`latBot` are the y±CUBE/4 latitudes, hoisted from emitRing (constant per ring).
+  const emitCell = (
+    r: number, y: number, th: number, dTheta: number, arc: number, latTop: number, latBot: number,
+  ): void => {
     const hth = dTheta / 4; // quarter cell in longitude → sub-cell centre offset
     const hy = CUBE / 4; //    quarter cell in height
-    const sample = (dth: number, dy: number): boolean => {
-      const ct = Math.cos(th + dth), st = Math.sin(th + dth);
-      return SHOW_LAND && landAtDir(ct * r, y + dy, -st * r);
-    };
-    const tl = sample(-hth, hy), tr = sample(hth, hy);
-    const bl = sample(-hth, -hy), br = sample(hth, -hy);
+    const lonL = lonOf(th - hth), lonR = lonOf(th + hth);
+    const tl = SHOW_LAND && isLand(latTop, lonL), tr = SHOW_LAND && isLand(latTop, lonR);
+    const bl = SHOW_LAND && isLand(latBot, lonL), br = SHOW_LAND && isLand(latBot, lonR);
     if (tl === tr && tl === bl && tl === br) {
       emitFacet(r, th, y, arc, CUBE, tl); // uniform cell → one full cube
       return;
@@ -221,17 +233,24 @@ export function buildPlanet(opts: PlanetBuildOptions): InstancedMesh {
 
   // Emit one ring of outward-facing cubes: radius `r`, height `y`. The visible outward wall
   // (`sub`) gets the sub-voxel coastline; the backing rings behind it stay plain full cubes
-  // (they only close see-through gaps, so their coastline is never seen).
+  // (they only close see-through gaps, so their coastline is never seen). Latitude is constant
+  // along the ring, so compute it once here (not per cube — see lonOf/RAD2DEG above).
   const emitRing = (r: number, y: number, sub: boolean): void => {
     const nt = Math.max(1, Math.round((2 * Math.PI * r) / CUBE)); // cubes around, ~square
     const dTheta = (2 * Math.PI) / nt;
     const arc = (2 * Math.PI * r) / nt;
-    for (let it = 0; it < nt; it++) {
-      const th = (it + 0.5) * dTheta;
-      if (sub) {
-        emitCell(r, y, th, dTheta, arc);
-      } else {
-        emitFacet(r, th, y, arc, CUBE, SHOW_LAND && landAtDir(Math.cos(th) * r, y, -Math.sin(th) * r));
+    if (sub) {
+      const hy = CUBE / 4;
+      const latTop = Math.atan2(y + hy, r) * RAD2DEG;
+      const latBot = Math.atan2(y - hy, r) * RAD2DEG;
+      for (let it = 0; it < nt; it++) {
+        emitCell(r, y, (it + 0.5) * dTheta, dTheta, arc, latTop, latBot);
+      }
+    } else {
+      const lat = Math.atan2(y, r) * RAD2DEG;
+      for (let it = 0; it < nt; it++) {
+        const th = (it + 0.5) * dTheta;
+        emitFacet(r, th, y, arc, CUBE, SHOW_LAND && isLand(lat, lonOf(th)));
       }
     }
   };
@@ -292,7 +311,11 @@ export function buildPlanet(opts: PlanetBuildOptions): InstancedMesh {
     }
   }
 
-  const geometry = new RoundedBoxGeometry(1, 1, 1, 2, bevel);
+  // One bevel segment (not two): a single chamfer ring per edge instead of a two-step
+  // fillet. At this cube scale the rounded silhouette reads the same, but it roughly halves
+  // the vertex/triangle count of the planet's tens-of-thousands of instances — the biggest
+  // vertex saving here, and it also lightens the shadow-map pass (mobile is vertex-bound).
+  const geometry = new RoundedBoxGeometry(1, 1, 1, 1, bevel);
   const material = new MeshStandardMaterial({
     roughness: opts.roughness,
     metalness: opts.metalness,
