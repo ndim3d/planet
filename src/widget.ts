@@ -153,8 +153,8 @@ export interface PlanetWidgetOptions {
 export const DEFAULTS = {
   background: '#0f1225',
   starfield: true,
-  waterColor: '#4aa1fc',
-  landColor: '#90e13b',
+  waterColor: '#3399FF',
+  landColor: '#87FD00',
   radius: 30,
   rotationSpeed: 0.1,
   autoRotate: false,
@@ -173,11 +173,11 @@ export const DEFAULTS = {
   },
   lighting: {
     exposure: 1.45,
-    hemisphere: { skyColor: '#ffffff', groundColor: '#7c89a3', intensity: 1.65 },
+    hemisphere: { skyColor: '#ffffff', groundColor: '#7c89a3', intensity: 1.60 },
     key: { color: '#ffffff', intensity: 1.9, position: [5, 8, 5] as [number, number, number] },
     fill: { color: '#dce6ff', intensity: 0.3, position: [-7, -3, 3] as [number, number, number] },
   },
-  markerVoxelSize: 0.32,
+  markerVoxelSize: 0.2,
 } satisfies Required<Omit<PlanetWidgetOptions, 'markers'>>;
 
 const FOV = 45;
